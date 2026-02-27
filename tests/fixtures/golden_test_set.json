@@ -1,0 +1,36 @@
+{
+  "description": "Golden test set for Modular RAG MCP Server evaluation. Contains test queries with expected chunk IDs for IR metrics and optional reference answers for LLM-as-Judge metrics.",
+  "version": "1.0",
+  "test_cases": [
+    {
+      "query": "What is Modular RAG?",
+      "expected_chunk_ids": [],
+      "expected_sources": [],
+      "reference_answer": "Modular RAG is a Retrieval-Augmented Generation system built with modular, pluggable components that can be configured and swapped independently."
+    },
+    {
+      "query": "How to configure Azure OpenAI?",
+      "expected_chunk_ids": [],
+      "expected_sources": [],
+      "reference_answer": "Configure Azure OpenAI by setting the provider to 'azure' in settings.yaml, along with the deployment_name, azure_endpoint, api_version, and api_key fields."
+    },
+    {
+      "query": "What is hybrid search and how does it work?",
+      "expected_chunk_ids": [],
+      "expected_sources": [],
+      "reference_answer": "Hybrid search combines dense retrieval (semantic embeddings) and sparse retrieval (BM25 keyword matching), then fuses results using Reciprocal Rank Fusion (RRF) for better recall."
+    },
+    {
+      "query": "Explain the chunking strategy",
+      "expected_chunk_ids": [],
+      "expected_sources": [],
+      "reference_answer": "Documents are split into chunks using configurable strategies (recursive, semantic, or fixed-length). Chunks are then refined and enriched with metadata before storage."
+    },
+    {
+      "query": "What evaluation metrics are supported?",
+      "expected_chunk_ids": [],
+      "expected_sources": [],
+      "reference_answer": "The system supports hit_rate, MRR (custom metrics), and Ragas LLM-as-Judge metrics including faithfulness, answer_relevancy, and context_precision."
+    }
+  ]
+}

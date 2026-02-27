@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "modular-rag-mcp-server"
+version = "0.1.0"
+description = "A modular RAG (Retrieval-Augmented Generation) MCP Server for knowledge management"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [
+    { name = "Your Name", email = "your.email@example.com" }
+]
+keywords = ["mcp", "rag", "retrieval", "llm", "knowledge-base"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "pyyaml>=6.0",
+    "langchain-text-splitters>=0.3.0",
+    "chromadb>=0.4.0",
+    "mcp>=1.0.0",
+    "jieba>=0.42",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-cov>=4.0",
+    "pytest-asyncio>=0.21",
+    "pytest-mock>=3.14",
+    "ruff>=0.1.0",
+    "mypy>=1.0",
+    "openai>=1.0",
+]
+
+[project.scripts]
+mcp-server = "main:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+markers = [
+    "unit: Unit tests (fast, no external dependencies)",
+    "integration: Integration tests (may require external services)",
+    "e2e: End-to-end tests (full system tests)",
+    "llm: marks tests that require real LLM API calls (deselect with '-m \"not llm\"')",
+    "slow: Slow tests that should be run less frequently",
+]
+addopts = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+ignore_missing_imports = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]

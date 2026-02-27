@@ -1,0 +1,101 @@
+# Modular RAG MCP Server - Configuration
+# This is the main configuration file for the MCP Server.
+# Edit this file to configure LLM, Embedding, VectorStore, and other services.
+
+# =============================================================================
+# LLM Configuration
+# =============================================================================
+llm:
+  provider: "openai"  # Using DashScope OpenAI-compatible API for Qwen
+  model: "qwen-plus"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "sk-02c170ed9467429f8834a3f743b4f215"
+  temperature: 0.0
+  max_tokens: 4096
+  proxy: "http://127.0.0.1:7897"  # 本地代理，留空则不使用代理
+
+# =============================================================================
+# Embedding Configuration
+# =============================================================================
+embedding:
+  provider: "openai"  # Using DashScope OpenAI-compatible API for Qwen embedding
+  model: "text-embedding-v3"
+  dimensions: 1024  # DashScope text-embedding-v3 默认 1024 维
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "sk-02c170ed9467429f8834a3f743b4f215"
+
+# =============================================================================
+# Vision LLM Configuration (for Image Captioning)
+# =============================================================================
+vision_llm:
+  enabled: false  # Set to true to enable vision capabilities
+  provider: "openai"  # Using DashScope OpenAI-compatible API for Qwen VL
+  model: "qwen-vl-plus"  # Qwen 视觉模型
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "sk-02c170ed9467429f8834a3f743b4f215"
+  max_image_size: 2048  # Max dimension (width/height) for image compression
+
+# =============================================================================
+# Vector Store Configuration
+# =============================================================================
+vector_store:
+  provider: "chroma"  # Options: chroma, qdrant, pinecone
+  persist_directory: "./data/db/chroma"
+  collection_name: "knowledge_hub"
+
+# =============================================================================
+# Retrieval Configuration
+# =============================================================================
+retrieval:
+  dense_top_k: 20
+  sparse_top_k: 20
+  fusion_top_k: 10
+  rrf_k: 60  # RRF constant
+
+# =============================================================================
+# Rerank Configuration
+# =============================================================================
+rerank:
+  enabled: false
+  provider: "none"  # Options: none, cross_encoder, llm
+  model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  top_k: 5
+
+# =============================================================================
+# Evaluation Configuration
+# =============================================================================
+evaluation:
+  enabled: false
+  provider: "custom"  # Options: ragas, deepeval, custom
+  metrics:
+    - "hit_rate"
+    - "mrr"
+    - "faithfulness"
+
+# =============================================================================
+# Observability Configuration
+# =============================================================================
+observability:
+  log_level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
+  trace_enabled: true
+  trace_file: "./logs/traces.jsonl"
+  structured_logging: true
+
+# =============================================================================
+# Ingestion Configuration
+# =============================================================================
+ingestion:
+  chunk_size: 1000
+  chunk_overlap: 200
+  splitter: "recursive"  # Options: recursive, semantic, fixed_length
+  batch_size: 100
+  
+  # Chunk Refiner Configuration (C5)
+  chunk_refiner:
+    use_llm: false  # Set to true to enable LLM-based refinement (requires LLM config)
+    # When use_llm is false or LLM call fails, falls back to rule-based refinement
+  
+  # Metadata Enricher Configuration (C6)
+  metadata_enricher:
+    use_llm: false  # Set to true to enable LLM-based enrichment (requires LLM config)
+    # When use_llm is false or LLM call fails, falls back to rule-based enrichment
