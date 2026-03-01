@@ -1,32 +1,24 @@
-# Modular RAG MCP Server
+# 九洲 RAG 管理平台
 
-> 一个可插拔、可观测的模块化 RAG (检索增强生成) 服务框架，通过 MCP (Model Context Protocol) 协议对外暴露工具接口，支持 Copilot / Claude 等 AI 助手直接调用。
+> 一个可插拔、可观测的模块化 RAG (检索增强生成) 知识库管理平台，支持智能问答、文档上传、方案生成，并通过 MCP (Model Context Protocol) 协议对外暴露工具接口。
 
 ---
 
 ## 🏗️ 项目概览
 
-- **Ingestion Pipeline**：PDF → Markdown → Chunk → Transform → Embedding → Upsert（支持多模态图片描述）
+- **知识库问答**：基于知识库检索的智能问答，支持文件上传（招标文件/需求文档/目录模板）、三种检索模式（模型自动判断/每次都检索/不检索）、超长文档自动分段续写
+- **富内容渲染**：回答中自动生成 Mermaid 架构图/流程图、数据图表（柱状图/饼图/折线图）、知识库图片展示、AI 配图
+- **Ingestion Pipeline**：PDF / DOCX / TXT / MD → Markdown → Chunk → Transform → Embedding → Upsert（支持多模态图片描述）
 - **Hybrid Search**：Dense (向量) + Sparse (BM25) + RRF Fusion + 可选 Rerank
 - **MCP Server**：通过标准 MCP 协议暴露 `query_knowledge_hub`、`list_collections`、`get_document_summary` 三个 Tools
-- **Dashboard**：Streamlit 六页面管理平台（系统总览 / 数据浏览 / Ingestion 管理 / 追踪可视化 / 评估面板）
+- **Dashboard**：Streamlit 管理平台（知识库问答 / 知识库构建 / 系统总览 / 数据浏览 / 摄取管理 / 追踪可视化 / 评估面板）
 - **Evaluation**：Ragas + Custom 评估体系，支持 golden test set 回归测试
 
 > 📖 详细架构设计和任务排期请参阅 [DEV_SPEC.md](DEV_SPEC.md)
 
 ---
 
-## 📂 分支说明
-
-| 分支 | 用途 | 说明 |
-|------|------|------|
-| **`main`** | 最新代码 | 始终只有 **1 个 commit**，包含项目的最新完整代码。 |
-| **`dev`** | 开发过程记录 | 保留了完整的 commit 历史，记录了从零开始逐步构建的过程。 |
-| **`clean-start`** | 干净起点 | 仅包含工程骨架（Skills + DEV_SPEC），任务进度全部清零。**适合想从零开始自己动手实现的用户**。 |
-
----
-
-## 🚀 快速开始
+##  快速开始
 
 ### 1. 环境准备
 
@@ -54,19 +46,27 @@ pip install -e ".[dev]"
 
 ```yaml
 llm:
-  provider: "azure"            # 可选: openai, azure, ollama, deepseek
-  model: "gpt-4o"
-  api_key: "your-api-key"      # 替换为你的 API Key
-  azure_endpoint: "https://your-endpoint.openai.azure.com/"
+  provider: "openai"           # 使用 DashScope OpenAI 兼容 API
+  model: "qwen-plus"           # 通义千问模型
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "your-api-key"      # 替换为你的 DashScope API Key
 
 embedding:
-  provider: "azure"            # 可选: openai, azure, ollama
-  model: "text-embedding-ada-002"
-  api_key: "your-api-key"      # 替换为你的 API Key
-  azure_endpoint: "https://your-endpoint.openai.azure.com/"
+  provider: "openai"           # 使用 DashScope OpenAI 兼容 API
+  model: "text-embedding-v3"   # 通义向量模型
+  dimensions: 1024
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "your-api-key"      # 替换为你的 DashScope API Key
+
+vision_llm:
+  enabled: true
+  provider: "openai"
+  model: "qwen-vl-plus"        # 通义视觉模型
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key: "your-api-key"
 ```
 
-> **提示**：如果使用 Ollama（本地部署），无需 API Key，只需确保 Ollama 服务在运行。
+> **提示**：当前默认配置使用阿里云 DashScope（通义千问）系列模型。也支持 Azure OpenAI、OpenAI、Ollama 等其他提供商。
 
 ### 3. 运行首次数据摄取
 
@@ -99,13 +99,16 @@ python scripts/query.py --query "测试查询" --collection my_collection
 
 | 配置块 | 字段 | 说明 | 默认值 |
 |--------|------|------|--------|
-| **llm** | `provider` | LLM 提供商 | `azure` |
-| | `model` | 模型名称 | `gpt-4o` |
+| **llm** | `provider` | LLM 提供商 | `openai` (DashScope 兼容) |
+| | `model` | 模型名称 | `qwen-plus` |
+| | `base_url` | API 地址 | DashScope 兼容端点 |
 | | `temperature` | 创造性程度 (0-1) | `0.0` |
 | | `max_tokens` | 最大输出 token 数 | `4096` |
-| **embedding** | `provider` | Embedding 提供商 | `azure` |
-| | `model` | 模型名称 | `text-embedding-ada-002` |
-| | `dimensions` | 向量维度 | `1536` |
+| **embedding** | `provider` | Embedding 提供商 | `openai` (DashScope 兼容) |
+| | `model` | 模型名称 | `text-embedding-v3` |
+| | `dimensions` | 向量维度 | `1024` |
+| **vision_llm** | `enabled` | 是否启用视觉能力 | `true` |
+| | `model` | 视觉模型 | `qwen-vl-plus` |
 | **vector_store** | `provider` | 向量存储引擎 | `chroma` |
 | | `persist_directory` | 持久化路径 | `./data/db/chroma` |
 | | `collection_name` | 默认集合名 | `knowledge_hub` |
@@ -189,14 +192,34 @@ python scripts/start_dashboard.py --port 8502
 
 ### 页面功能
 
+**主功能：**
+
 | 页面 | 功能 | 说明 |
 |------|------|------|
-| **📊 Overview** | 系统总览 | 展示组件配置、集合统计 |
-| **🔍 Data Browser** | 数据浏览 | 浏览文档列表、chunk 内容、元数据 |
-| **📥 Ingestion Manager** | 摄取管理 | 上传文件、触发 Pipeline、实时进度条 |
-| **🔬 Ingestion Traces** | 摄取追踪 | 查看摄取链路各阶段耗时、详细日志 |
-| **🔎 Query Traces** | 查询追踪 | 查看检索链路各阶段、Dense/Sparse 对比 |
-| **📏 Evaluation Panel** | 评估面板 | 运行评估、查看 hit_rate/MRR 等指标 |
+| **� 知识库问答** | 智能问答（默认页） | 基于知识库检索 + LLM 生成专业方案，支持文件上传、检索模式切换、Mermaid 图表、数据图表、超长文档自动续写 |
+| **📂 知识库构建** | 批量摄取 | 指定本地文件夹一键构建知识库，后台运行，支持页面切换后进度不丢失 |
+
+**系统管理（侧边栏折叠）：**
+
+| 页面 | 功能 | 说明 |
+|------|------|------|
+| **📊 系统总览** | Overview | 展示组件配置、集合统计 |
+| **🔍 数据浏览** | Data Browser | 浏览文档列表、chunk 内容、元数据 |
+| **📥 摄取管理** | Ingestion Manager | 上传文件、触发 Pipeline、实时进度条 |
+| **🔬 摄取追踪** | Ingestion Traces | 查看摄取链路各阶段耗时、详细日志 |
+| **🔎 查询追踪** | Query Traces | 查看检索链路各阶段、Dense/Sparse 对比 |
+| **📏 评估面板** | Evaluation Panel | 运行评估、查看 hit_rate/MRR 等指标 |
+
+### 知识库问答功能特性
+
+- **📎 文件上传**：支持上传 PDF、DOCX、PPTX、XLSX、TXT、MD、CSV 等格式的招标文件、需求文档或目录模板，AI 将结合上传内容与知识库一起生成方案
+- **🔍 检索模式**：三种模式可选 —— 🤖 模型自动判断（LLM 决定是否需要检索）、📚 每次都检索、🚫 不检索
+- **📝 超长文档续写**：单次生成上限 4096 token，超长方案自动分段续写（最多 6 轮），生成完整长文档
+- **🧜 Mermaid 图表**：方案中涉及架构、流程时自动生成 Mermaid 图表
+- **📊 数据图表**：涉及数据对比时自动生成柱状图、饼图、折线图
+- **🖼️ 知识库图片**：从检索到的文档中提取并展示相关图片
+- **🎨 AI 配图**：可选通过通义万相 API 自动生成方案配图
+- **📤 导出**：支持将生成的方案导出为 Markdown 文档
 
 ---
 
@@ -239,6 +262,7 @@ pytest --cov=src --cov-report=term-missing -q
 **Q: 报错 `AuthenticationError` 或 `401`**
 
 检查 `config/settings.yaml` 中 API Key 是否正确：
+- DashScope: 确认 `api_key` 以 `sk-` 开头，`base_url` 为 `https://dashscope.aliyuncs.com/compatible-mode/v1`
 - Azure: 确认 `azure_endpoint`、`api_key`、`deployment_name` 三者匹配
 - OpenAI: 确认 `api_key` 以 `sk-` 开头
 - Ollama: 确认本地服务已启动 (`ollama serve`)
@@ -293,18 +317,29 @@ python scripts/start_dashboard.py --port 8502
 
 ```
 ├── config/
-│   ├── settings.yaml          # 主配置文件
-│   └── prompts/               # LLM prompt 模板
+│   ├── settings.yaml              # 主配置文件（LLM/Embedding/VectorStore 等）
+│   └── prompts/                   # LLM prompt 模板
 ├── src/
-│   ├── core/                  # 核心：类型、设置、查询引擎、响应构建
-│   ├── ingestion/             # 摄取：Pipeline、Chunking、Transform、Storage
-│   ├── libs/                  # 可插拔层：LLM/Embedding/Splitter/VectorStore/Reranker
-│   ├── mcp_server/            # MCP Server：Protocol Handler + Tools
-│   └── observability/         # 可观测性：Logger、Dashboard、Evaluation
-├── scripts/                   # CLI 入口脚本
-├── tests/                     # 测试：unit / integration / e2e / fixtures
-├── data/                      # 数据存储（ChromaDB / BM25 / 图片）
-└── logs/                      # 追踪日志
+│   ├── core/                      # 核心：类型、设置、查询引擎、响应构建
+│   ├── ingestion/                 # 摄取：Pipeline、Chunking、Transform、Storage
+│   ├── libs/                      # 可插拔层：LLM/Embedding/Splitter/VectorStore/Reranker
+│   ├── mcp_server/                # MCP Server：Protocol Handler + Tools
+│   └── observability/
+│       └── dashboard/
+│           ├── app.py             # Dashboard 主入口（导航 + 路由）
+│           └── pages/
+│               ├── knowledge_qa.py    # 💬 知识库问答（主页）
+│               ├── knowledge_base.py  # 📂 知识库构建
+│               ├── overview.py        # 📊 系统总览
+│               ├── data_browser.py    # 🔍 数据浏览
+│               ├── ingestion_manager.py # 📥 摄取管理
+│               ├── ingestion_traces.py  # 🔬 摄取追踪
+│               ├── query_traces.py    # 🔎 查询追踪
+│               └── evaluation_panel.py # 📏 评估面板
+├── scripts/                       # CLI 入口脚本
+├── tests/                         # 测试：unit / integration / e2e / fixtures
+├── data/                          # 数据存储（ChromaDB / BM25 / 图片）
+└── logs/                          # 追踪日志
 ```
 
 ---

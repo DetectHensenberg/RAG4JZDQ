@@ -121,6 +121,10 @@ class OpenAIVisionLLM(BaseVisionLLM):
         
         self._use_azure_auth = False
         
+        # Base URL: explicit param > vision_settings > azure > llm settings > default
+        vision_base_url = getattr(vision_settings, 'base_url', None) if vision_settings else None
+        llm_base_url = getattr(settings.llm, 'base_url', None)
+        
         if base_url:
             self.base_url = base_url
         elif azure_endpoint:
@@ -131,8 +135,26 @@ class OpenAIVisionLLM(BaseVisionLLM):
             self._use_azure_auth = True
             if not self.api_version:
                 self.api_version = "2024-02-15-preview"
+        elif vision_base_url:
+            self.base_url = vision_base_url
+        elif llm_base_url:
+            self.base_url = llm_base_url
         else:
             self.base_url = self.DEFAULT_BASE_URL
+        
+        # Proxy configuration: vision_llm > llm > env var
+        self._proxy = None
+        if vision_settings:
+            self._proxy = getattr(vision_settings, 'proxy', None)
+        if not self._proxy:
+            self._proxy = (
+                getattr(settings.llm, 'proxy', None)
+                or os.environ.get("HTTPS_PROXY")
+                or os.environ.get("https_proxy")
+                or os.environ.get("HTTP_PROXY")
+                or os.environ.get("http_proxy")
+                or None
+            )
         
         self._extra_config = kwargs
     
@@ -272,7 +294,18 @@ class OpenAIVisionLLM(BaseVisionLLM):
         
         # Calculate new size maintaining aspect ratio
         ratio = min(max_width / width, max_height / height)
-        new_size = (int(width * ratio), int(height * ratio))
+        new_width = max(int(width * ratio), 1)
+        new_height = max(int(height * ratio), 1)
+        
+        # Reject images that would be too small after resize
+        _MIN_DIM = 10
+        if new_width < _MIN_DIM or new_height < _MIN_DIM:
+            raise OpenAIVisionLLMError(
+                f"[OpenAI Vision] Image too narrow/short after resize "
+                f"({new_width}x{new_height}px), skipping"
+            )
+        
+        new_size = (new_width, new_height)
         
         # Resize image
         img_resized = img.resize(new_size, Image.Resampling.LANCZOS)
@@ -305,13 +338,16 @@ class OpenAIVisionLLM(BaseVisionLLM):
                 f"[OpenAI Vision] Failed to encode image: {e}"
             ) from e
     
+    _MAX_RETRIES = 3
+    _RETRY_BACKOFF = (2, 5, 10)  # seconds between retries
+    
     def _call_api(
         self,
         messages: list[dict],
         temperature: float,
         max_tokens: int,
     ) -> dict:
-        """Make HTTP request to the Vision API.
+        """Make HTTP request to the Vision API with retry on transient errors.
         
         Args:
             messages: List of API-formatted messages.
@@ -322,9 +358,12 @@ class OpenAIVisionLLM(BaseVisionLLM):
             API response as dictionary.
         
         Raises:
-            OpenAIVisionLLMError: If API call fails.
+            OpenAIVisionLLMError: If API call fails after all retries.
         """
-        import httpx
+        import time
+        import requests as _requests
+        import urllib3
+        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         if self.api_version:
@@ -348,9 +387,16 @@ class OpenAIVisionLLM(BaseVisionLLM):
             "max_tokens": max_tokens,
         }
         
-        try:
-            with httpx.Client(timeout=60.0) as client:
-                response = client.post(url, json=payload, headers=headers)
+        # Build request kwargs
+        req_kwargs: dict = {"timeout": 180}
+        if self._proxy:
+            req_kwargs["proxies"] = {"https": self._proxy, "http": self._proxy}
+            req_kwargs["verify"] = False
+        
+        last_error: Exception | None = None
+        for attempt in range(self._MAX_RETRIES):
+            try:
+                response = _requests.post(url, json=payload, headers=headers, **req_kwargs)
                 
                 if response.status_code != 200:
                     error_detail = self._parse_error_response(response)
@@ -359,14 +405,25 @@ class OpenAIVisionLLM(BaseVisionLLM):
                     )
                 
                 return response.json()
-        except httpx.TimeoutException as e:
-            raise OpenAIVisionLLMError(
-                "[OpenAI Vision] Request timed out after 60 seconds"
-            ) from e
-        except httpx.RequestError as e:
-            raise OpenAIVisionLLMError(
-                f"[OpenAI Vision] Connection failed: {type(e).__name__}: {e}"
-            ) from e
+            except _requests.exceptions.Timeout as e:
+                raise OpenAIVisionLLMError(
+                    "[OpenAI Vision] Request timed out after 180 seconds"
+                ) from e
+            except (_requests.exceptions.ConnectionError, _requests.exceptions.SSLError) as e:
+                last_error = e
+                if attempt < self._MAX_RETRIES - 1:
+                    delay = self._RETRY_BACKOFF[attempt]
+                    time.sleep(delay)
+                    continue
+            except _requests.exceptions.RequestException as e:
+                raise OpenAIVisionLLMError(
+                    f"[OpenAI Vision] Connection failed: {type(e).__name__}: {e}"
+                ) from e
+        
+        raise OpenAIVisionLLMError(
+            f"[OpenAI Vision] Connection failed after {self._MAX_RETRIES} retries: "
+            f"{type(last_error).__name__}: {last_error}"
+        ) from last_error
     
     def _parse_error_response(self, response: Any) -> str:
         """Parse error details from API response."""

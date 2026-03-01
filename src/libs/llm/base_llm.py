@@ -33,11 +33,13 @@ class ChatResponse:
         model: The model identifier that generated the response.
         usage: Optional token usage statistics (prompt_tokens, completion_tokens, total_tokens).
         raw_response: Optional raw response from the provider for debugging.
+        finish_reason: Why the model stopped generating ('stop', 'length', etc.).
     """
     content: str
     model: str
     usage: Optional[Dict[str, int]] = None
     raw_response: Optional[Any] = None
+    finish_reason: Optional[str] = None
 
 
 class BaseLLM(ABC):

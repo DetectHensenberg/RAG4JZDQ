@@ -101,7 +101,7 @@ def render() -> None:
             color: white;
         ">
             <h1 style="margin:0 0 0.3rem 0; font-size:1.75rem; font-weight:800;">
-                📊 模块化 RAG 管理平台
+                📊 九洲RAG
             </h1>
             <p style="margin:0; opacity:0.92; font-size:0.95rem;">
                 检索增强生成系统 · 知识库管理 · 性能追踪 · 评估分析

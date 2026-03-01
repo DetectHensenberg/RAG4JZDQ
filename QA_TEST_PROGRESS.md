@@ -1,15 +1,49 @@
-# QA Test Progress
+# QA Test Progress — 九洲 RAG 管理平台
 
-> Generated: 2026-02-25 23:02
+> Generated: 2026-03-01 20:22
 
-> Total: 150 test cases
+> Total: 172 test cases (150 original + 16 QA + 6 KB)
 
-> ✅ Pass: 138 | ❌ Fail: 0 | ⏭️ Skip: 12 | 🔧 Fix: 0 | ⬜ Pending: 0
+> ✅ Pass: 138 | ❌ Fail: 0 | ⏭️ Skip: 12 | 🔧 Fix: 0 | ⬜ Pending: 22
 
 
 <!-- STATUS LEGEND: ⬜ pending | ✅ pass | ❌ fail | ⏭️ skip | 🔧 fix (needs re-test) -->
 
 
+
+## QA. Dashboard — 知识库问答页面
+
+
+| Status | ID | Title | Note |
+|--------|----|-------|------|
+| ⬜ | QA-01 | 知识库问答页面默认加载 | Pending |
+| ⬜ | QA-02 | 侧边栏导航结构 | Pending |
+| ⬜ | QA-03 | 检索模式切换 — 每次都检索 | Pending |
+| ⬜ | QA-04 | 检索模式切换 — 不检索 | Pending |
+| ⬜ | QA-05 | 检索模式切换 — 自动判断 | Pending |
+| ⬜ | QA-06 | 自动判断 — 专业问题触发检索 | Pending |
+| ⬜ | QA-07 | 文件上传 — 单文件 | Pending |
+| ⬜ | QA-08 | 文件上传 — 多文件 | Pending |
+| ⬜ | QA-09 | 文件上传 + 不检索模式 | Pending |
+| ⬜ | QA-10 | 超长文档自动续写 | Pending |
+| ⬜ | QA-11 | Mermaid 图表渲染 | Pending |
+| ⬜ | QA-12 | 数据图表渲染 | Pending |
+| ⬜ | QA-13 | 知识库图片显示 | Pending |
+| ⬜ | QA-14 | 方案导出为 Markdown | Pending |
+| ⬜ | QA-15 | 空知识库查询（无上传文档） | Pending |
+| ⬜ | QA-16 | 对话历史保持 | Pending |
+
+## KB. Dashboard — 知识库构建页面
+
+
+| Status | ID | Title | Note |
+|--------|----|-------|------|
+| ⬜ | KB-01 | 知识库构建页面加载 | Pending |
+| ⬜ | KB-02 | 批量摄取正常流程 | Pending |
+| ⬜ | KB-03 | 摄取进度页面切换不丢失 | Pending |
+| ⬜ | KB-04 | 摄取过程中禁用输入 | Pending |
+| ⬜ | KB-05 | 空文件夹路径 | Pending |
+| ⬜ | KB-06 | 增量摄取（重复文件跳过） | Pending |
 
 ## A. Dashboard — Overview 页面
 

@@ -12,8 +12,11 @@ Design Principles:
 """
 
 from typing import List, Dict, Any, Optional, Tuple
+import logging
 import time
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 from src.core.types import Chunk
 from src.ingestion.embedding.dense_encoder import DenseEncoder
@@ -150,25 +153,15 @@ class BatchProcessor:
         for batch_idx, batch in enumerate(batches):
             batch_start = time.time()
             
-            try:
-                # Dense encoding
-                batch_dense = self.dense_encoder.encode(batch, trace=trace)
-                dense_vectors.extend(batch_dense)
-                
-                # Sparse encoding
-                batch_sparse = self.sparse_encoder.encode(batch, trace=trace)
-                sparse_stats.extend(batch_sparse)
-                
-                successful_chunks += len(batch)
-                
-            except Exception as e:
-                # Record failure but continue with remaining batches
-                failed_chunks += len(batch)
-                if trace:
-                    trace.record_stage(
-                        f"batch_{batch_idx}_error",
-                        {"error": str(e), "batch_size": len(batch)}
-                    )
+            # Dense encoding (DenseEncoder has internal retry logic)
+            batch_dense = self.dense_encoder.encode(batch, trace=trace)
+            dense_vectors.extend(batch_dense)
+            
+            # Sparse encoding
+            batch_sparse = self.sparse_encoder.encode(batch, trace=trace)
+            sparse_stats.extend(batch_sparse)
+            
+            successful_chunks += len(batch)
             
             batch_duration = time.time() - batch_start
             

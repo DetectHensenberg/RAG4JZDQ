@@ -81,14 +81,14 @@ class TestPdfLoaderInitialization:
 class TestPdfLoaderValidation:
     """Tests for input validation."""
     
-    def test_load_requires_pdf_extension(self, tmp_path):
-        """load() raises ValueError for non-PDF files."""
-        txt_file = tmp_path / "test.txt"
-        txt_file.write_text("not a pdf")
+    def test_load_requires_supported_extension(self, tmp_path):
+        """load() raises ValueError for unsupported file types."""
+        xyz_file = tmp_path / "test.xyz"
+        xyz_file.write_text("not a supported format")
         
         loader = PdfLoader()
-        with pytest.raises(ValueError, match="not a PDF"):
-            loader.load(txt_file)
+        with pytest.raises(ValueError, match="Unsupported file type"):
+            loader.load(xyz_file)
     
     def test_load_nonexistent_file(self):
         """load() raises FileNotFoundError for missing files."""

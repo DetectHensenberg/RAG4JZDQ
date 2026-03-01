@@ -27,9 +27,10 @@ from src.observability.logger import get_logger
 
 # Libs layer imports
 from src.libs.loader.file_integrity import SQLiteIntegrityChecker
-from src.libs.loader.pdf_loader import PdfLoader
+from src.libs.loader.loader_factory import LoaderFactory
 from src.libs.embedding.embedding_factory import EmbeddingFactory
 from src.libs.vector_store.vector_store_factory import VectorStoreFactory
+from src.libs.llm.llm_factory import LLMFactory
 
 # Ingestion layer imports
 from src.ingestion.chunking.document_chunker import DocumentChunker
@@ -141,12 +142,18 @@ class IngestionPipeline:
         self.integrity_checker = SQLiteIntegrityChecker(db_path=str(resolve_path("data/db/ingestion_history.db")))
         logger.info("  ✓ FileIntegrityChecker initialized")
         
-        # Stage 2: Loader
-        self.loader = PdfLoader(
-            extract_images=True,
-            image_storage_dir=str(resolve_path(f"data/images/{collection}"))
-        )
-        logger.info("  ✓ PdfLoader initialized")
+        # Stage 2: Loader (via LoaderFactory, created per-file in run())
+        self.image_storage_dir = str(resolve_path(f"data/images/{collection}"))
+        self.vision_llm = None
+        if settings.vision_llm and settings.vision_llm.enabled:
+            try:
+                self.vision_llm = LLMFactory.create_vision_llm(settings)
+                logger.info(f"  ✓ Vision LLM initialized (model={settings.vision_llm.model})")
+            except Exception as e:
+                logger.warning(f"  ⚠ Vision LLM init failed, scanned pages will use text-only: {e}")
+        else:
+            logger.info("  ℹ Vision LLM disabled, scanned/image-based pages use text-only extraction")
+        logger.info("  ✓ LoaderFactory ready (PDF, PPTX, DOCX, TXT, MD)")
         
         # Stage 3: Chunker
         self.chunker = DocumentChunker(settings)
@@ -159,7 +166,7 @@ class IngestionPipeline:
         self.metadata_enricher = MetadataEnricher(settings)
         logger.info(f"  ✓ MetadataEnricher initialized (use_llm={self.metadata_enricher.use_llm})")
         
-        self.image_captioner = ImageCaptioner(settings)
+        self.image_captioner = ImageCaptioner(settings, llm=self.vision_llm)
         has_vision = self.image_captioner.llm is not None
         logger.info(f"  ✓ ImageCaptioner initialized (vision_enabled={has_vision})")
         
@@ -255,25 +262,36 @@ class IngestionPipeline:
             _notify("load", 2)
             
             _t0 = time.monotonic()
-            document = self.loader.load(str(file_path))
+            loader = LoaderFactory.create(
+                file_path=str(file_path),
+                extract_images=True,
+                image_storage_dir=self.image_storage_dir,
+                vision_llm=self.vision_llm,
+            )
+            document = loader.load(str(file_path))
             _elapsed = (time.monotonic() - _t0) * 1000.0
             
             text_preview = document.text[:200].replace('\n', ' ') + "..." if len(document.text) > 200 else document.text
             image_count = len(document.metadata.get("images", []))
+            vision_pages = document.metadata.get("vision_pages_processed", 0) + document.metadata.get("vision_slides_processed", 0)
             
             logger.info(f"  Document ID: {document.id}")
             logger.info(f"  Text length: {len(document.text)} chars")
             logger.info(f"  Images extracted: {image_count}")
+            if vision_pages > 0:
+                logger.info(f"  Vision LLM processed: {vision_pages} pages/slides")
             logger.info(f"  Preview: {text_preview[:100]}...")
             
             stages["loading"] = {
                 "doc_id": document.id,
                 "text_length": len(document.text),
-                "image_count": image_count
+                "image_count": image_count,
+                "vision_pages": vision_pages,
+                "loader": type(loader).__name__,
             }
             if trace is not None:
                 trace.record_stage("load", {
-                    "method": "markitdown",
+                    "method": type(loader).__name__,
                     "doc_id": document.id,
                     "text_length": len(document.text),
                     "image_count": image_count,

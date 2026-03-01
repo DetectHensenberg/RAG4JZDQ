@@ -150,14 +150,17 @@ class OpenAILLM(BaseLLM):
             )
             
             # Parse response
-            content = response_data["choices"][0]["message"]["content"]
+            choice = response_data["choices"][0]
+            content = choice["message"]["content"]
             usage = response_data.get("usage")
+            finish_reason = choice.get("finish_reason", "stop")
             
             return ChatResponse(
                 content=content,
                 model=response_data.get("model", model),
                 usage=usage,
                 raw_response=response_data,
+                finish_reason=finish_reason,
             )
         except KeyError as e:
             raise OpenAILLMError(

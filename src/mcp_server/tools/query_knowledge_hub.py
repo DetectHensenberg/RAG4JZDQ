@@ -155,9 +155,9 @@ class QueryKnowledgeHubTool:
         Args:
             collection: Target collection name.
         """
-        # Always rebuild vector_store and retriever components so that
-        # data ingested by other processes (e.g. Dashboard) is visible
-        # immediately without requiring an MCP Server restart.
+        # Skip rebuild if already initialised for this collection
+        if self._initialized and self._current_collection == collection:
+            return
         
         logger.info(f"Initializing query components for collection: {collection}")
         

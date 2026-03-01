@@ -12,9 +12,18 @@ Design Principles:
 - Deterministic: Same inputs produce same outputs
 """
 
+import logging
+import time
 from typing import List, Optional, Any
 from src.core.types import Chunk
 from src.libs.embedding.base_embedding import BaseEmbedding
+
+logger = logging.getLogger(__name__)
+
+
+# DashScope text-embedding-v3 allows max 8192 tokens per input text.
+# For Chinese text, 1 char ≈ 1-2 tokens; use 6000 chars as safe limit.
+MAX_TEXT_CHARS = 6000
 
 
 class DenseEncoder:
@@ -61,7 +70,8 @@ class DenseEncoder:
             raise ValueError(f"batch_size must be positive, got {batch_size}")
         
         self.embedding = embedding
-        self.batch_size = batch_size
+        # Cap at 10 to comply with provider API limits (e.g. DashScope max 10 per request)
+        self.batch_size = min(batch_size, 10)
     
     def encode(
         self,
@@ -99,15 +109,21 @@ class DenseEncoder:
         if not chunks:
             raise ValueError("Cannot encode empty chunks list")
         
-        # Extract text from chunks
-        texts = [chunk.text for chunk in chunks]
-        
-        # Validate that all texts are non-empty
-        for i, text in enumerate(texts):
-            if not text or not text.strip():
+        # Extract text from chunks, truncating if over the API limit
+        texts = []
+        for chunk in chunks:
+            t = chunk.text
+            if not t or not t.strip():
                 raise ValueError(
-                    f"Chunk at index {i} (id={chunks[i].id}) has empty or whitespace-only text"
+                    f"Chunk (id={chunk.id}) has empty or whitespace-only text"
                 )
+            if len(t) > MAX_TEXT_CHARS:
+                logger.warning(
+                    f"Chunk {chunk.id} text too long ({len(t)} chars), "
+                    f"truncating to {MAX_TEXT_CHARS} chars for embedding"
+                )
+                t = t[:MAX_TEXT_CHARS]
+            texts.append(t)
         
         # Process in batches
         all_vectors: List[List[float]] = []
@@ -116,27 +132,44 @@ class DenseEncoder:
             batch_end = min(batch_start + self.batch_size, len(texts))
             batch_texts = texts[batch_start:batch_end]
             
-            try:
-                # Call embedding provider
-                batch_vectors = self.embedding.embed(
-                    texts=batch_texts,
-                    trace=trace,
-                )
-                
-                # Validate output shape
-                if len(batch_vectors) != len(batch_texts):
-                    raise RuntimeError(
-                        f"Embedding provider returned {len(batch_vectors)} vectors "
-                        f"for {len(batch_texts)} texts in batch {batch_start}-{batch_end}"
+            max_retries = 3
+            retry_delays = (2, 5, 10)
+            last_err: Exception | None = None
+            
+            for attempt in range(max_retries):
+                try:
+                    # Call embedding provider
+                    batch_vectors = self.embedding.embed(
+                        texts=batch_texts,
+                        trace=trace,
                     )
-                
-                all_vectors.extend(batch_vectors)
-                
-            except Exception as e:
-                # Re-raise with context about which batch failed
+                    
+                    # Validate output shape
+                    if len(batch_vectors) != len(batch_texts):
+                        raise RuntimeError(
+                            f"Embedding provider returned {len(batch_vectors)} vectors "
+                            f"for {len(batch_texts)} texts in batch {batch_start}-{batch_end}"
+                        )
+                    
+                    all_vectors.extend(batch_vectors)
+                    last_err = None
+                    break
+                    
+                except Exception as e:
+                    last_err = e
+                    if attempt < max_retries - 1:
+                        delay = retry_delays[attempt]
+                        logger.warning(
+                            f"Embedding batch {batch_start}-{batch_end} failed "
+                            f"(attempt {attempt+1}/{max_retries}), retrying in {delay}s: {e}"
+                        )
+                        time.sleep(delay)
+            
+            if last_err is not None:
                 raise RuntimeError(
-                    f"Failed to encode batch {batch_start}-{batch_end}: {str(e)}"
-                ) from e
+                    f"Failed to encode batch {batch_start}-{batch_end} "
+                    f"after {max_retries} attempts: {last_err}"
+                ) from last_err
         
         # Final validation
         if len(all_vectors) != len(chunks):
