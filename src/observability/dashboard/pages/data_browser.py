@@ -18,12 +18,12 @@ from src.observability.dashboard.services.data_service import DataService
 
 def render() -> None:
     """Render the Data Browser page."""
-    st.header("🔍 数据浏览")
+    st.header("🔍 Data Browser")
 
     try:
         svc = DataService()
     except Exception as exc:
-        st.error(f"初始化数据服务失败: {exc}")
+        st.error(f"Failed to initialise DataService: {exc}")
         return
 
     # ── Collection selector ────────────────────────────────────────
@@ -31,7 +31,7 @@ def render() -> None:
     if "default" not in collections:
         collections.insert(0, "default")
     collection = st.selectbox(
-        "集合",
+        "Collection",
         options=collections,
         index=0,
         key="db_collection_filter",
@@ -40,36 +40,36 @@ def render() -> None:
 
     # ── Danger zone: clear all data ────────────────────────────────
     st.divider()
-    with st.expander("⚠️ 危险操作", expanded=False):
+    with st.expander("⚠️ Danger Zone", expanded=False):
         st.warning(
-            "此操作将**永久删除**所有数据: "
-            "ChromaDB 集合、BM25 索引、图片、摄取历史和追踪日志。"
+            "This will **permanently delete** all data: "
+            "ChromaDB collections, BM25 indexes, images, ingestion history, and trace logs."
         )
         col_btn, col_status = st.columns([1, 2])
         with col_btn:
-            if st.button("🗑️ 清除所有数据", type="primary", key="btn_clear_all"):
+            if st.button("🗑️ Clear All Data", type="primary", key="btn_clear_all"):
                 st.session_state["confirm_clear"] = True
 
         if st.session_state.get("confirm_clear"):
-            st.error("确定要删除吗？此操作无法撤销！")
+            st.error("Are you sure? This action cannot be undone!")
             c1, c2, _ = st.columns([1, 1, 2])
             with c1:
-                if st.button("✅ 确认删除", key="btn_confirm_clear"):
+                if st.button("✅ Yes, delete everything", key="btn_confirm_clear"):
                     result = svc.reset_all()
                     st.session_state["confirm_clear"] = False
                     if result["errors"]:
                         st.warning(
-                            f"已清除，但有 {len(result['errors'])} 个错误: "
+                            f"Cleared with {len(result['errors'])} error(s): "
                             + "; ".join(result["errors"])
                         )
                     else:
                         st.success(
-                            f"所有数据已清除！"
-                            f"共删除 {result['collections_deleted']} 个集合。"
+                            f"All data cleared! "
+                            f"{result['collections_deleted']} collection(s) deleted."
                         )
                     st.rerun()
             with c2:
-                if st.button("❌ 取消", key="btn_cancel_clear"):
+                if st.button("❌ Cancel", key="btn_cancel_clear"):
                     st.session_state["confirm_clear"] = False
                     st.rerun()
 
@@ -79,32 +79,32 @@ def render() -> None:
     try:
         docs = svc.list_documents(coll_arg)
     except Exception as exc:
-        st.error(f"加载文档失败: {exc}")
+        st.error(f"Failed to load documents: {exc}")
         return
 
     if not docs:
         st.info(
-            "**当前集合中没有文档。** "
-            "请前往『摄取管理』页面上传并摄取文件，"
-            "或从上方下拉框选择其他集合。"
+            "**No documents found in this collection.** "
+            "Use the Ingestion Manager page to upload and ingest files, "
+            "or select a different collection from the dropdown above."
         )
         return
 
-    st.subheader(f"📄 文档 ({len(docs)})")
+    st.subheader(f"📄 Documents ({len(docs)})")
 
     for idx, doc in enumerate(docs):
         source_name = Path(doc["source_path"]).name
-        label = f"📑 {source_name}  —  {doc['chunk_count']} 个分块 · {doc['image_count']} 张图片"
+        label = f"📑 {source_name}  —  {doc['chunk_count']} chunks · {doc['image_count']} images"
         with st.expander(label, expanded=(len(docs) == 1)):
             # ── Document metadata ──────────────────────────────────
             col_a, col_b, col_c = st.columns(3)
-            col_a.metric("分块数", doc["chunk_count"])
-            col_b.metric("图片数", doc["image_count"])
-            col_c.metric("集合", doc.get("collection", "—"))
+            col_a.metric("Chunks", doc["chunk_count"])
+            col_b.metric("Images", doc["image_count"])
+            col_c.metric("Collection", doc.get("collection", "—"))
             st.caption(
-                f"**来源:** {doc['source_path']}  ·  "
-                f"**哈希:** `{doc['source_hash'][:16]}…`  ·  "
-                f"**处理时间:** {doc.get('processed_at', '—')}"
+                f"**Source:** {doc['source_path']}  ·  "
+                f"**Hash:** `{doc['source_hash'][:16]}…`  ·  "
+                f"**Processed:** {doc.get('processed_at', '—')}"
             )
 
             st.divider()
@@ -112,7 +112,7 @@ def render() -> None:
             # ── Chunk cards ────────────────────────────────────────
             chunks = svc.get_chunks(doc["source_hash"], coll_arg)
             if chunks:
-                st.markdown(f"### 📦 分块 ({len(chunks)})")
+                st.markdown(f"### 📦 Chunks ({len(chunks)})")
                 for cidx, chunk in enumerate(chunks):
                     text = chunk.get("text", "")
                     meta = chunk.get("metadata", {})
@@ -127,13 +127,13 @@ def render() -> None:
 
                     with st.container(border=True):
                         st.markdown(
-                            f"**分块 {cidx + 1}** · `{chunk_id[-16:]}` · "
-                            f"{len(text)} 字符"
+                            f"**Chunk {cidx + 1}** · `{chunk_id[-16:]}` · "
+                            f"{len(text)} chars"
                         )
                         # Show the actual chunk text (scrollable)
                         _height = max(120, min(len(text) // 2, 600))
                         st.text_area(
-                            "内容",
+                            "Content",
                             value=text,
                             height=_height,
                             disabled=True,
@@ -141,16 +141,16 @@ def render() -> None:
                             label_visibility="collapsed",
                         )
                         # Expandable metadata
-                        with st.expander("📋 元数据", expanded=False):
+                        with st.expander("📋 Metadata", expanded=False):
                             st.json(meta)
             else:
-                st.caption("向量库中未找到该文档的分块。")
+                st.caption("No chunks found in vector store for this document.")
 
             # ── Image preview ──────────────────────────────────────
             images = svc.get_images(doc["source_hash"], coll_arg)
             if images:
                 st.divider()
-                st.markdown(f"### 🖼️ 图片 ({len(images)})")
+                st.markdown(f"### 🖼️ Images ({len(images)})")
                 img_cols = st.columns(min(len(images), 4))
                 for iidx, img in enumerate(images):
                     with img_cols[iidx % len(img_cols)]:
@@ -158,4 +158,4 @@ def render() -> None:
                         if img_path.exists():
                             st.image(str(img_path), caption=img["image_id"], width=200)
                         else:
-                            st.caption(f"{img['image_id']} (文件缺失)")
+                            st.caption(f"{img['image_id']} (file missing)")

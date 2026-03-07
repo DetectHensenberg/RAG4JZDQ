@@ -100,8 +100,6 @@ class LLMSettings:
     deployment_name: Optional[str] = None
     # Ollama-specific optional fields
     base_url: Optional[str] = None
-    # Proxy configuration
-    proxy: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -167,7 +165,6 @@ class VisionLLMSettings:
     azure_endpoint: Optional[str] = None
     deployment_name: Optional[str] = None
     base_url: Optional[str] = None
-    proxy: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -230,7 +227,6 @@ class Settings:
                 azure_endpoint=vision_llm.get("azure_endpoint"),
                 deployment_name=vision_llm.get("deployment_name"),
                 base_url=vision_llm.get("base_url"),
-                proxy=vision_llm.get("proxy"),
             )
 
         settings = cls(
@@ -244,7 +240,6 @@ class Settings:
                 azure_endpoint=llm.get("azure_endpoint"),
                 deployment_name=llm.get("deployment_name"),
                 base_url=llm.get("base_url"),
-                proxy=llm.get("proxy"),
             ),
             embedding=EmbeddingSettings(
                 provider=_require_str(embedding, "provider", "embedding"),

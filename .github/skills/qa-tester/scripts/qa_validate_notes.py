@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
-PROGRESS_FILE = REPO_ROOT / "QA_TEST_PROGRESS.md"
+PROGRESS_FILE = REPO_ROOT / ".github" / "skills" / "qa-tester" / "QA_TEST_PROGRESS.md"
 
 # ── Patterns that indicate INFERRED rather than EXECUTED results ──
 

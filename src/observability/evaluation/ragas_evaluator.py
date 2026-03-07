@@ -211,12 +211,20 @@ class RagasEvaluator(BaseEvaluator):
         # ── LLM ──
         llm_cfg = self.settings.llm
         provider = llm_cfg.provider.lower()
+        llm_azure_endpoint = getattr(llm_cfg, "azure_endpoint", None)
 
-        if provider == "azure":
+        # Azure-compatible mode: if azure_endpoint is configured, use Azure
+        # client even when provider is "openai" (matches project convention).
+        use_azure_llm = (
+            provider == "azure"
+            or (provider == "openai" and llm_azure_endpoint)
+        )
+
+        if use_azure_llm:
             llm_client = AsyncAzureOpenAI(
                 api_key=llm_cfg.api_key,
-                azure_endpoint=llm_cfg.azure_endpoint,
-                api_version=llm_cfg.api_version or "2024-02-15-preview",
+                azure_endpoint=llm_azure_endpoint or llm_cfg.azure_endpoint,
+                api_version=getattr(llm_cfg, "api_version", None) or "2024-02-15-preview",
             )
         elif provider == "openai":
             llm_client = AsyncOpenAI(api_key=llm_cfg.api_key)
@@ -231,12 +239,19 @@ class RagasEvaluator(BaseEvaluator):
         # ── Embeddings ──
         emb_cfg = self.settings.embedding
         emb_provider = emb_cfg.provider.lower()
+        emb_azure_endpoint = getattr(emb_cfg, "azure_endpoint", None)
 
-        if emb_provider == "azure":
+        # Same Azure-compatible mode detection for embeddings
+        use_azure_emb = (
+            emb_provider == "azure"
+            or (emb_provider == "openai" and emb_azure_endpoint)
+        )
+
+        if use_azure_emb:
             emb_client = AsyncAzureOpenAI(
                 api_key=emb_cfg.api_key,
-                azure_endpoint=emb_cfg.azure_endpoint,
-                api_version=emb_cfg.api_version or "2024-02-15-preview",
+                azure_endpoint=emb_azure_endpoint or emb_cfg.azure_endpoint,
+                api_version=getattr(emb_cfg, "api_version", None) or "2024-02-15-preview",
             )
         elif emb_provider == "openai":
             emb_client = AsyncOpenAI(api_key=emb_cfg.api_key)

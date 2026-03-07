@@ -30,10 +30,9 @@ dependencies = [
     "mcp>=1.0.0",
     "jieba>=0.42",
     "markitdown[pdf]>=0.1.0",
-    "PyMuPDF>=1.24.0",
-    "Pillow>=10.0",
-    "python-pptx>=1.0.0",
-    "requests>=2.31",
+    "streamlit>=1.30.0",
+    "ragas>=0.1.0",
+    "datasets>=2.0.0",
 ]
 
 [project.optional-dependencies]

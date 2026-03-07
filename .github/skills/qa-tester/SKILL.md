@@ -14,7 +14,7 @@ Optional modifiers: append section letter (`run QA G`) or test ID (`run QA G-01`
 > ## ⛔ IRON RULES
 >
 > ### Rule 1: STRICTLY SERIAL
-> Pick ONE test → Run ONE command → Wait for output → Record ONE row in `QA_TEST_PROGRESS.md` → THEN pick next.
+> Pick ONE test → Run ONE command → Wait for output → Record ONE row in `.github/skills/qa-tester/QA_TEST_PROGRESS.md` → THEN pick next.
 > NEVER run two tests in one command. NEVER record two rows in one file edit. NEVER use parallel tool calls. NEVER plan the next test before recording the current one.
 >
 > ### Rule 2: PASS = TERMINAL OUTPUT EVIDENCE
@@ -49,7 +49,7 @@ Optional modifiers: append section letter (`run QA G`) or test ID (`run QA G-01`
 3. Run ONE command — WAIT for output
 4. Verify ALL assertions from Expected Result vs ACTUAL output
 5. Fix if needed (≤3 rounds)
-6. ⛔ GATE: Edit QA_TEST_PROGRESS.md (row + counters) — ONE row per edit
+6. ⛔ GATE: Edit `.github/skills/qa-tester/QA_TEST_PROGRESS.md` (row + counters) — ONE row per edit
 7. Only NOW return to step 1
 ```
 
@@ -59,8 +59,8 @@ Optional modifiers: append section letter (`run QA G`) or test ID (`run QA G-01`
 
 ## Step 1: Pick Target
 
-1. Read `QA_TEST_PLAN.md` for test steps and expected results.
-2. Read `QA_TEST_PROGRESS.md` for current status.
+1. Read `.github/skills/qa-tester/QA_TEST_PLAN.md` for test steps and expected results.
+2. Read `.github/skills/qa-tester/QA_TEST_PROGRESS.md` for current status.
 3. User-specified section/ID → scope to that. Otherwise → first ⬜ pending test.
 4. If any 🔧 tests exist, re-test those first.
 5. Execute in section order (A→O), within section in ID order.
@@ -100,7 +100,7 @@ Check state → `python .github/skills/qa-tester/scripts/qa_bootstrap.py status`
 
 ### CLI Tests (G, H, I, parts of K/L/M)
 
-1. Read the test's **Steps** column from `QA_TEST_PLAN.md`.
+1. Read the test's **Steps** column from `.github/skills/qa-tester/QA_TEST_PLAN.md`.
 2. Run the exact command in terminal.
 3. Compare output against **Expected Result**:
    - **Ingest**: exit=0, output has stage names (load/split/transform/embed/upsert)
@@ -158,7 +158,7 @@ python .github/skills/qa-tester/scripts/qa_multistep.py <TEST_ID>
 
 The script executes every sub-step, prints ACTUAL values at each step, outputs `VERDICT: PASS/FAIL`. Copy the VERDICT and key step values into the Note.
 
-For tests NOT in the script, run commands from QA_TEST_PLAN.md manually and paste output.
+For tests NOT in the script, run commands from `.github/skills/qa-tester/QA_TEST_PLAN.md` manually and paste output.
 
 ---
 
@@ -176,7 +176,7 @@ For tests NOT in the script, run commands from QA_TEST_PLAN.md manually and past
 
 **⛔ GATE — do this BEFORE picking the next test.**
 
-Edit `QA_TEST_PROGRESS.md`: update ONE test row + summary counters. ONE row per file edit.
+Edit `.github/skills/qa-tester/QA_TEST_PROGRESS.md`: update ONE test row + summary counters. ONE row per file edit.
 
 ### ✅ PASS Requirements
 
@@ -225,8 +225,8 @@ Re-execute any flagged test. Do NOT proceed until 0 flags.
 
 | File | Purpose |
 |------|---------|
-| `QA_TEST_PLAN.md` | Test steps and expected results |
-| `QA_TEST_PROGRESS.md` | Execution status and notes |
+| `.github/skills/qa-tester/QA_TEST_PLAN.md` | Test steps and expected results |
+| `.github/skills/qa-tester/QA_TEST_PROGRESS.md` | Execution status and notes |
 | `config/settings.yaml` | System configuration |
 | `scripts/ingest.py` / `query.py` / `evaluate.py` | CLI commands |
 | `tests/e2e/test_mcp_client.py` | MCP E2E tests |

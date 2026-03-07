@@ -81,9 +81,8 @@ class OpenAILLM(BaseLLM):
         azure_endpoint = getattr(settings.llm, 'azure_endpoint', None)
         self.api_version = getattr(settings.llm, 'api_version', None)
         
-        effective_base_url = base_url or getattr(settings.llm, 'base_url', None)
-        if effective_base_url:
-            self.base_url = effective_base_url
+        if base_url:
+            self.base_url = base_url
             self._use_azure_auth = False
         elif azure_endpoint:
             # Azure-compatible mode: construct deployment-based URL
@@ -96,16 +95,6 @@ class OpenAILLM(BaseLLM):
             self.base_url = self.DEFAULT_BASE_URL
             self._use_azure_auth = False
         
-        # Proxy configuration: settings > env var
-        self._proxy = (
-            getattr(settings.llm, 'proxy', None)
-            or os.environ.get("HTTPS_PROXY")
-            or os.environ.get("https_proxy")
-            or os.environ.get("HTTP_PROXY")
-            or os.environ.get("http_proxy")
-            or None
-        )
-
         # Store any additional kwargs for future use
         self._extra_config = kwargs
     
@@ -150,17 +139,14 @@ class OpenAILLM(BaseLLM):
             )
             
             # Parse response
-            choice = response_data["choices"][0]
-            content = choice["message"]["content"]
+            content = response_data["choices"][0]["message"]["content"]
             usage = response_data.get("usage")
-            finish_reason = choice.get("finish_reason", "stop")
             
             return ChatResponse(
                 content=content,
                 model=response_data.get("model", model),
                 usage=usage,
                 raw_response=response_data,
-                finish_reason=finish_reason,
             )
         except KeyError as e:
             raise OpenAILLMError(
@@ -196,14 +182,12 @@ class OpenAILLM(BaseLLM):
         Raises:
             OpenAILLMError: If the API call fails.
         """
-        import requests as _requests
-        import urllib3
-        urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
-
+        import httpx
+        
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         if self.api_version:
             url += f"?api-version={self.api_version}"
-
+        
         if self._use_azure_auth:
             headers = {
                 "api-key": self.api_key,
@@ -220,28 +204,23 @@ class OpenAILLM(BaseLLM):
             "temperature": temperature,
             "max_tokens": max_tokens,
         }
-
-        # Build request kwargs
-        req_kwargs: dict = {"timeout": 180}
-        if self._proxy:
-            req_kwargs["proxies"] = {"https": self._proxy, "http": self._proxy}
-            req_kwargs["verify"] = False
-
+        
         try:
-            response = _requests.post(url, json=payload, headers=headers, **req_kwargs)
-
-            if response.status_code != 200:
-                error_detail = self._parse_error_response(response)
-                raise OpenAILLMError(
-                    f"[OpenAI] API error (HTTP {response.status_code}): {error_detail}"
-                )
-
-            return response.json()
-        except _requests.exceptions.Timeout as e:
+            with httpx.Client(timeout=60.0) as client:
+                response = client.post(url, json=payload, headers=headers)
+                
+                if response.status_code != 200:
+                    error_detail = self._parse_error_response(response)
+                    raise OpenAILLMError(
+                        f"[OpenAI] API error (HTTP {response.status_code}): {error_detail}"
+                    )
+                
+                return response.json()
+        except httpx.TimeoutException as e:
             raise OpenAILLMError(
-                f"[OpenAI] Request timed out after 180 seconds"
+                f"[OpenAI] Request timed out after 60 seconds"
             ) from e
-        except _requests.exceptions.RequestException as e:
+        except httpx.RequestError as e:
             raise OpenAILLMError(
                 f"[OpenAI] Connection failed: {type(e).__name__}: {e}"
             ) from e
