@@ -177,29 +177,60 @@ def _should_retrieve_kb(question: str, has_uploaded_doc: bool) -> bool:
 
 
 # ── Regex patterns for parsing LLM output ────────────────────
-_MERMAID_PATTERN = re.compile(r"```mermaid\s*\n(.*?)```", re.DOTALL)
-_CHART_PATTERN = re.compile(r"```chart\s*\n(.*?)```", re.DOTALL)
+_MERMAID_PATTERN = re.compile(r"```mermaid\s*(.*?)```", re.DOTALL)
+_CHART_PATTERN = re.compile(r"```chart\s*(.*?)```", re.DOTALL)
 
 # Split answer into segments: plain markdown, mermaid blocks, chart blocks
 _BLOCK_PATTERN = re.compile(
-    r"(```mermaid\s*\n.*?```|```chart\s*\n.*?```)", re.DOTALL
+    r"(```mermaid\s*.*?```|```chart\s*.*?```)", re.DOTALL
 )
+
+
+def _render_mermaid(code: str) -> None:
+    """Render a Mermaid diagram using streamlit.components.v1.html."""
+    import html as _html
+    import streamlit.components.v1 as components
+
+    escaped = _html.escape(code.strip())
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+      <style>
+        body {{ margin: 0; padding: 0; background: transparent; }}
+        .mermaid {{ background: #fff; border-radius: 8px; padding: 16px; }}
+      </style>
+    </head>
+    <body>
+      <div class="mermaid">
+{escaped}
+      </div>
+      <script>
+        mermaid.initialize({{ startOnLoad: true, theme: 'default' }});
+      </script>
+    </body>
+    </html>
+    """
+    components.html(html_content, height=500, scrolling=True)
 
 
 def _render_rich_answer(answer: str) -> None:
     """Parse LLM answer and render Mermaid diagrams + chart blocks inline."""
     segments = _BLOCK_PATTERN.split(answer)
+    logger.debug(f"_render_rich_answer: {len(segments)} segments, has_mermaid={'```mermaid' in answer}")
     for seg in segments:
         seg_stripped = seg.strip()
         if not seg_stripped:
             continue
         if seg_stripped.startswith("```mermaid"):
-            # Extract mermaid code and render
+            # Extract mermaid code and render via mermaid.js
             m = _MERMAID_PATTERN.match(seg_stripped)
+            logger.info(f"Mermaid block detected, regex match={'yes' if m else 'no'}, len={len(seg_stripped)}")
             if m:
-                st.markdown(seg_stripped)  # Streamlit natively renders ```mermaid
+                _render_mermaid(m.group(1))
             else:
-                st.markdown(seg_stripped)
+                st.code(seg_stripped, language="mermaid")
         elif seg_stripped.startswith("```chart"):
             m = _CHART_PATTERN.match(seg_stripped)
             if m:
@@ -255,25 +286,70 @@ def _collect_kb_images(results: list) -> List[Dict[str, Any]]:
     """Extract image paths from retrieval results metadata.
 
     Returns a list of dicts with 'path', 'caption', 'source' keys.
-    Handles various metadata formats: images can be strings, dicts, or lists.
+
+    ChromaDB flattens complex metadata values to strings, so this function
+    handles both native Python objects and string-serialized representations
+    (e.g. ``images`` stored as ``str(list_of_dicts)``).
     """
-    images = []
-    seen_paths = set()
+    import ast as _ast
+
+    # Project root for resolving relative image paths
+    _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
+
+    images: List[Dict[str, Any]] = []
+    seen_paths: set = set()
 
     _IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".svg", ".tiff", ".ico"}
+
+    def _resolve(raw_path: str) -> Optional[Path]:
+        """Resolve a path to an absolute Path if the file exists."""
+        p = Path(raw_path)
+        if p.is_file():
+            return p
+        # Try relative to project root
+        p2 = _PROJECT_ROOT / raw_path
+        if p2.is_file():
+            return p2
+        return None
 
     def _add(path: str, caption: str, source: str) -> None:
         if not path or len(path) <= 1 or path in seen_paths:
             return
         try:
-            p = Path(path)
-            if p.suffix.lower() not in _IMG_EXTS:
+            resolved = _resolve(path)
+            if resolved is None:
                 return
-            if p.is_file():
-                seen_paths.add(path)
-                images.append({"path": path, "caption": caption, "source": source})
+            if resolved.suffix.lower() not in _IMG_EXTS:
+                return
+            key = str(resolved)
+            if key in seen_paths:
+                return
+            seen_paths.add(key)
+            images.append({"path": str(resolved), "caption": caption, "source": source})
         except (OSError, ValueError):
             pass
+
+    def _parse_field(value) -> list:
+        """Parse a metadata field that may be a list, dict, tuple, or string.
+
+        ChromaDB serialises complex metadata as ``str(obj)``, so the value
+        may come back as e.g. ``"{'id':...},{'id':...}"`` which
+        ``ast.literal_eval`` parses as a *tuple* of dicts.
+        """
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        if isinstance(value, dict):
+            return [value]
+        if isinstance(value, str) and value:
+            try:
+                parsed = _ast.literal_eval(value)
+                if isinstance(parsed, (list, tuple)):
+                    return list(parsed)
+                if isinstance(parsed, dict):
+                    return [parsed]
+            except (ValueError, SyntaxError):
+                pass
+        return []
 
     for r in results:
         try:
@@ -282,20 +358,20 @@ def _collect_kb_images(results: list) -> List[Dict[str, Any]]:
             continue
         source_name = Path(meta.get("source_path", "")).name if meta.get("source_path") else ""
 
-        for img in meta.get("images", []):
+        for img in _parse_field(meta.get("images")):
             if isinstance(img, str):
                 _add(img, "", source_name)
             elif isinstance(img, dict):
                 _add(img.get("path", ""), img.get("caption", ""), source_name)
 
-        for cap in meta.get("image_captions", []):
+        for cap in _parse_field(meta.get("image_captions")):
             if isinstance(cap, str):
                 _add(cap, "", source_name)
             elif isinstance(cap, dict):
                 path = cap.get("path", "")
                 if not path:
                     img_id = cap.get("id", "")
-                    for img in meta.get("images", []):
+                    for img in _parse_field(meta.get("images")):
                         if isinstance(img, dict) and img.get("id") == img_id:
                             path = img.get("path", "")
                             break
@@ -305,35 +381,22 @@ def _collect_kb_images(results: list) -> List[Dict[str, Any]]:
 
 
 def _generate_ai_image(prompt: str, api_key: str) -> Optional[str]:
-    """Generate an image using DashScope wanx text-to-image API.
+    """Generate an image using DashScope ImageSynthesis (wanx) text-to-image API.
 
     Returns the image URL on success, None on failure.
     """
     try:
-        import dashscope
-        from dashscope.aigc.image_generation import ImageGeneration
-        from dashscope.api_entities.dashscope_response import Message as DSMessage
+        from http import HTTPStatus
+        from dashscope import ImageSynthesis
 
-        dashscope.base_http_api_url = 'https://dashscope.aliyuncs.com/api/v1'
-        message = DSMessage(
-            role="user",
-            content=[{"text": prompt}],
-        )
-        rsp = ImageGeneration.call(
-            model="wanx-v1",
+        rsp = ImageSynthesis.call(
             api_key=api_key,
-            messages=[message],
+            model="wanx-v1",
+            prompt=prompt,
             n=1,
             size="1024*1024",
         )
-        if rsp.status_code == 200:
-            choices = rsp.output.get("choices", [])
-            if choices:
-                content = choices[0].get("message", {}).get("content", [])
-                for item in content:
-                    if item.get("type") == "image":
-                        return item.get("image")
-            # Fallback: older API response format
+        if rsp.status_code == HTTPStatus.OK:
             results = rsp.output.get("results", [])
             if results:
                 return results[0].get("url")
@@ -427,7 +490,7 @@ def _render_entry(entry: Dict[str, Any], key_suffix: str) -> None:
             cols = st.columns(min(len(kb_images), 3))
             for i, img_info in enumerate(kb_images):
                 with cols[i % 3]:
-                    st.image(img_info["path"], use_container_width=True)
+                    st.image(img_info["path"], width="stretch")
                     cap = img_info.get("caption", "")
                     src = img_info.get("source", "")
                     label = cap if cap else src
@@ -438,7 +501,7 @@ def _render_entry(entry: Dict[str, Any], key_suffix: str) -> None:
     ai_img_url = entry.get("ai_image_url")
     if ai_img_url:
         with st.expander("🎨 AI 生成配图", expanded=True):
-            st.image(ai_img_url, use_container_width=True)
+            st.image(ai_img_url, width="stretch")
 
     # Export + reference buttons
     col_md, col_ref = st.columns([1, 1])
@@ -450,7 +513,7 @@ def _render_entry(entry: Dict[str, Any], key_suffix: str) -> None:
             file_name="系统方案.md",
             mime="text/markdown",
             key=f"dl_md_{key_suffix}",
-            use_container_width=True,
+            width="stretch",
         )
     with col_ref:
         if st.button("\U0001F50D 查看参考资料", key=f"ref_{key_suffix}"):
@@ -545,8 +608,78 @@ def render() -> None:
         horizontal=True,
     )
 
-    # ── Chat input ─────────────────────────────────────────────
-    question = st.chat_input("输入你的问题，例如：请根据招标文件写一份投标技术方案")
+    # ── Prompt template buttons ────────────────────────────────
+    _PROMPT_TEMPLATES = {
+        "📊 PPT大纲生成": (
+            "我正在为准备一个关于______的售前解决方案PPT。\n"
+            "客户的核心痛点是______，我希望通过此次方案的汇报达成______的目标。"
+            "请基于以上信息和我上传的公司产品资料，为我设计一个完整的PPT大纲。\n"
+            "大纲需要逻辑清晰，层层递进，最终能说服客户。"
+            "请直接输出一个包含层级关系（例如，第一级为部分标题，第二级为该部分下的核心论点）的提纲。"
+        ),
+        "🎯 PPT页面标题设计": (
+            "当前PPT的整个逻辑主线是：\"______\"。\n"
+            "现在我们需要为其中的______页面设计具体的页面标题。\n"
+            "请严格遵循以下要求，一次性输出五个备选标题供我挑选：\n"
+            "1. 精准性：准确概括该页的核心内容。\n"
+            "2. 客户视角：从客户价值与收益出发，具有吸引力。\n"
+            "3. 一致性：风格与整个PPT主线保持一致，专业严谨。\n"
+            "4. 表达风格：用语精炼、高大上，避免口语化，字数不超过15字。"
+        ),
+        "📝 单页内容设计": (
+            "当前PPT主题是______，现在我要写其中一页，这页的PPT标题是______，"
+            "本页需要具体阐述以下3个要点：\n"
+            "1. [请填写要点一]\n"
+            "2. [请填写要点二]\n"
+            "3. [请填写要点三]\n\n"
+            "请按以下结构协助我完成本页内容：\n"
+            "1. 总起句：为本页内容撰写一句开篇引语，承上启下。\n"
+            "2. 内容阐述：围绕上述三个要点，展开具体、有说服力的论述。\n"
+            "3. 呈现形式建议：建议本页内容适合的PPT视觉化呈现形式，并简要说明理由。"
+        ),
+        "💡 销售主张提炼": (
+            '我们的______（解决方案名称）与市场上主流方案相比，'
+            '核心优势在于______（例如：独特的算法、集成的生态、灵活的订阅模式）。\n'
+            '请帮我将这一优势提炼成一句令人印象深刻、客户易懂易记的“独特销售主张”，'
+            '并设计在PPT中至少三处不同的强调方式，句子要求是不超过20个字的金句。'
+        ),
+        "🔬 技术名词翻译": (
+            '我们的技术方案中有一个复杂但关键的概念/架构：______'
+            '（例如：微服务化部署、嵌入向量、意图理解），'
+            '直接向客户业务人员讲解过于晦涩。请帮我完成以下转换：\n'
+            '1. 概念比喻：用一个贴切的商业或生活比喻来解释这个技术概念。\n'
+            '2. 价值翻译：将技术的特性直接翻译成给客户业务带来的3个具体价值。'
+        ),
+    }
+
+    # ── Prompt template quick-fill buttons ────────────────────
+    _tpl_cols = st.columns(len(_PROMPT_TEMPLATES))
+    for idx, (label, tpl_text) in enumerate(_PROMPT_TEMPLATES.items()):
+        with _tpl_cols[idx]:
+            if st.button(label, key=f"tpl_{idx}", width="stretch"):
+                st.session_state["qa_text_area"] = tpl_text
+                st.rerun()
+
+    # ── Chat input (text_area + send button) ──────────────────
+    # Clear input from previous send (must happen BEFORE widget creation)
+    if st.session_state.get("_qa_clear_input"):
+        st.session_state["qa_text_area"] = ""
+        del st.session_state["_qa_clear_input"]
+
+    question_text = st.text_area(
+        "💬 输入你的问题",
+        height=150,
+        placeholder="输入你的问题，例如：请根据招标文件写一份投标技术方案\n\n点击上方按钮可快速填入提示词模板，编辑后点击发送。",
+        key="qa_text_area",
+        label_visibility="collapsed",
+    )
+
+    send_clicked = st.button("🚀 发送", type="primary", width="stretch")
+    question = question_text.strip() if send_clicked and question_text.strip() else None
+
+    # Schedule clearing for next rerun (after widget has been read)
+    if question:
+        st.session_state["_qa_clear_input"] = True
 
     if question:
         from src.core.settings import load_settings
