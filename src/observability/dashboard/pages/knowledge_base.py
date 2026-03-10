@@ -282,7 +282,7 @@ def render() -> None:
         st.button(
             "\U0001F4C1 浏览…",
             key="kb_browse_btn",
-            width="stretch",
+            use_container_width=True,
             on_click=_browse_callback,
             disabled=is_busy,
         )

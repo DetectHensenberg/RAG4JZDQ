@@ -332,7 +332,7 @@ def _render_history() -> None:
             }
         )
 
-    st.dataframe(rows, width="stretch")
+    st.dataframe(rows, use_container_width=True)
 
 
 def _save_to_history(report: Dict[str, Any]) -> None:
