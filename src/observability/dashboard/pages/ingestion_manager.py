@@ -86,7 +86,7 @@ def render() -> None:
     with col1:
         uploaded = st.file_uploader(
             "选择要摄取的文件",
-            type=["pdf", "txt", "md", "docx"],
+            type=["pdf", "txt", "md", "docx", "pptx", "ppt"],
             key="ingest_uploader",
         )
     with col2:
@@ -113,7 +113,7 @@ def render() -> None:
     if not docs:
         st.info(
             "**尚未摄取任何文档。** "
-            "请在上方上传 PDF、TXT、MD 或 DOCX 文件，然后点击『开始摄取』。"
+            "请在上方上传 PDF、TXT、MD、DOCX 或 PPTX 文件，然后点击『开始摄取』。"
         )
         return
 

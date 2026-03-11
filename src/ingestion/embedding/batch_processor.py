@@ -12,8 +12,11 @@ Design Principles:
 """
 
 from typing import List, Dict, Any, Optional, Tuple
+import logging
 import time
 from dataclasses import dataclass
+
+logger = logging.getLogger(__name__)
 
 from src.core.types import Chunk
 from src.ingestion.embedding.dense_encoder import DenseEncoder
@@ -162,7 +165,8 @@ class BatchProcessor:
                 successful_chunks += len(batch)
                 
             except Exception as e:
-                # Record failure but continue with remaining batches
+                # Log failure and continue with remaining batches
+                logger.error(f"Batch {batch_idx} encoding failed ({len(batch)} chunks): {e}")
                 failed_chunks += len(batch)
                 if trace:
                     trace.record_stage(

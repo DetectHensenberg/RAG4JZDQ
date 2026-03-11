@@ -58,7 +58,8 @@ class PdfLoader(BaseLoader):
     def __init__(
         self,
         extract_images: bool = True,
-        image_storage_dir: str | Path = "data/images"
+        image_storage_dir: str | Path = "data/images",
+        vision_llm: Any = None,
     ):
         """Initialize PDF Loader.
         
@@ -92,8 +93,10 @@ class PdfLoader(BaseLoader):
         """
         # Validate file
         path = self._validate_file(file_path)
-        if path.suffix.lower() != '.pdf':
-            raise ValueError(f"File is not a PDF: {path}")
+        suffix = path.suffix.lower()
+        supported = ('.pdf', '.md', '.docx', '.txt')
+        if suffix not in supported:
+            raise ValueError(f"Unsupported file type: {path} (supported: {supported})")
         
         # Compute document hash for unique ID and image directory
         doc_hash = self._compute_file_hash(path)
@@ -110,7 +113,7 @@ class PdfLoader(BaseLoader):
         # Initialize metadata
         metadata: Dict[str, Any] = {
             "source_path": str(path),
-            "doc_type": "pdf",
+            "doc_type": suffix.lstrip('.'),
             "doc_hash": doc_hash,
         }
         
@@ -119,8 +122,8 @@ class PdfLoader(BaseLoader):
         if title:
             metadata["title"] = title
         
-        # Handle image extraction (with graceful degradation)
-        if self.extract_images:
+        # Handle image extraction (PDF only, with graceful degradation)
+        if self.extract_images and suffix == '.pdf':
             try:
                 text_content, images_metadata = self._extract_and_process_images(
                     path, text_content, doc_hash

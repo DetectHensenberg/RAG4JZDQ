@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 _STATE_KEY = "_kb_ingestion_state"
 
 # Supported file extensions
-SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md", ".docx"}
+SUPPORTED_EXTENSIONS = {".pdf", ".txt", ".md", ".docx", ".pptx", ".ppt"}
 
 
 def _open_folder_dialog() -> str:
@@ -299,8 +299,8 @@ def render() -> None:
     with col_cfg2:
         ext_filter = st.multiselect(
             "文件类型筛选",
-            options=["PDF", "TXT", "MD", "DOCX"],
-            default=["PDF", "TXT", "MD", "DOCX"],
+            options=["PDF", "TXT", "MD", "DOCX", "PPTX"],
+            default=["PDF", "TXT", "MD", "DOCX", "PPTX"],
             key="kb_ext_filter",
             help="选择要扫描的文件类型。",
             disabled=is_busy,
@@ -405,7 +405,7 @@ def render() -> None:
                     在上方输入本地文件夹路径
                 </div>
                 <div style="font-size: 0.85rem;">
-                    支持 PDF、TXT、Markdown、DOCX 格式 · 自动递归扫描子目录
+                    支持 PDF、TXT、Markdown、DOCX、PPTX 格式 · 自动递归扫描子目录
                 </div>
             </div>
             """,

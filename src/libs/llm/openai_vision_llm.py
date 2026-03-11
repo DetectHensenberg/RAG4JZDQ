@@ -121,6 +121,10 @@ class OpenAIVisionLLM(BaseVisionLLM):
         
         self._use_azure_auth = False
         
+        # base_url resolution: explicit param > vision_settings > llm settings > default
+        vision_base_url = getattr(vision_settings, 'base_url', None) if vision_settings else None
+        llm_base_url = getattr(settings.llm, 'base_url', None)
+        
         if base_url:
             self.base_url = base_url
         elif azure_endpoint:
@@ -131,6 +135,10 @@ class OpenAIVisionLLM(BaseVisionLLM):
             self._use_azure_auth = True
             if not self.api_version:
                 self.api_version = "2024-02-15-preview"
+        elif vision_base_url:
+            self.base_url = vision_base_url
+        elif llm_base_url:
+            self.base_url = llm_base_url
         else:
             self.base_url = self.DEFAULT_BASE_URL
         

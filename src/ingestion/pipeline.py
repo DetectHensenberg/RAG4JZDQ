@@ -27,7 +27,7 @@ from src.observability.logger import get_logger
 
 # Libs layer imports
 from src.libs.loader.file_integrity import SQLiteIntegrityChecker
-from src.libs.loader.pdf_loader import PdfLoader
+from src.libs.loader.loader_factory import LoaderFactory
 from src.libs.embedding.embedding_factory import EmbeddingFactory
 from src.libs.vector_store.vector_store_factory import VectorStoreFactory
 
@@ -141,12 +141,9 @@ class IngestionPipeline:
         self.integrity_checker = SQLiteIntegrityChecker(db_path=str(resolve_path("data/db/ingestion_history.db")))
         logger.info("  ✓ FileIntegrityChecker initialized")
         
-        # Stage 2: Loader
-        self.loader = PdfLoader(
-            extract_images=True,
-            image_storage_dir=str(resolve_path(f"data/images/{collection}"))
-        )
-        logger.info("  ✓ PdfLoader initialized")
+        # Stage 2: Loader (created dynamically per file via LoaderFactory)
+        self._image_storage_dir = str(resolve_path(f"data/images/{collection}"))
+        logger.info("  ✓ LoaderFactory ready")
         
         # Stage 3: Chunker
         self.chunker = DocumentChunker(settings)
@@ -166,7 +163,10 @@ class IngestionPipeline:
         # Stage 5: Encoders
         embedding = EmbeddingFactory.create(settings)
         batch_size = settings.ingestion.batch_size if settings.ingestion else 100
-        self.dense_encoder = DenseEncoder(embedding, batch_size=batch_size)
+        # Embedding API batch size should be small to respect provider limits
+        # (e.g. DashScope text-embedding-v3 limits tokens/texts per request)
+        embedding_batch_size = min(batch_size, 6)
+        self.dense_encoder = DenseEncoder(embedding, batch_size=embedding_batch_size)
         logger.info(f"  ✓ DenseEncoder initialized (provider={settings.embedding.provider})")
         
         self.sparse_encoder = SparseEncoder()
@@ -175,9 +175,9 @@ class IngestionPipeline:
         self.batch_processor = BatchProcessor(
             dense_encoder=self.dense_encoder,
             sparse_encoder=self.sparse_encoder,
-            batch_size=batch_size
+            batch_size=embedding_batch_size
         )
-        logger.info(f"  ✓ BatchProcessor initialized (batch_size={batch_size})")
+        logger.info(f"  ✓ BatchProcessor initialized (batch_size={embedding_batch_size})")
         
         # Stage 6: Storage
         self.vector_upserter = VectorUpserter(settings, collection_name=collection)
@@ -255,7 +255,12 @@ class IngestionPipeline:
             _notify("load", 2)
             
             _t0 = time.monotonic()
-            document = self.loader.load(str(file_path))
+            loader = LoaderFactory.create(
+                file_path,
+                extract_images=True,
+                image_storage_dir=self._image_storage_dir,
+            )
+            document = loader.load(str(file_path))
             _elapsed = (time.monotonic() - _t0) * 1000.0
             
             text_preview = document.text[:200].replace('\n', ' ') + "..." if len(document.text) > 200 else document.text
@@ -433,6 +438,20 @@ class IngestionPipeline:
             _notify("upsert", 6)
             
             # 6a: Vector Upsert
+            if len(dense_vectors) == 0:
+                raise RuntimeError(
+                    f"Encoding failed: got 0 vectors for {len(chunks)} chunks. "
+                    f"Check embedding API logs above for details."
+                )
+            if len(dense_vectors) != len(chunks):
+                lost = len(chunks) - len(dense_vectors)
+                logger.warning(
+                    f"Partial encoding: {len(dense_vectors)}/{len(chunks)} chunks succeeded "
+                    f"({lost} chunks lost due to embedding errors). Proceeding with successful chunks."
+                )
+                # Trim chunks and sparse_stats to match the vectors we have
+                chunks = chunks[:len(dense_vectors)]
+                sparse_stats = sparse_stats[:len(dense_vectors)]
             logger.info("  6a. Vector Storage (ChromaDB)...")
             _t0_storage = time.monotonic()
             vector_ids = self.vector_upserter.upsert(chunks, dense_vectors, trace)

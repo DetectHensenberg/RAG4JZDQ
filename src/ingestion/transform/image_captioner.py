@@ -115,6 +115,13 @@ class ImageCaptioner(BaseTransform):
             logger.warning(f"Image path not found: {img_path}")
             return None
         
+        # Skip unsupported image formats (Vision API only supports common raster formats)
+        _SUPPORTED_IMG_EXTS = {".png", ".jpg", ".jpeg", ".gif", ".bmp", ".webp", ".tiff", ".tif"}
+        img_ext = Path(img_path).suffix.lower()
+        if img_ext not in _SUPPORTED_IMG_EXTS:
+            logger.debug(f"Skipping unsupported image format '{img_ext}': {img_path}")
+            return None
+        
         try:
             image_input = ImageInput(path=img_path)
             response = self.llm.chat_with_image(

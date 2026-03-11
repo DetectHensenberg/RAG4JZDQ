@@ -143,16 +143,25 @@ class OpenAIEmbedding(BaseEmbedding):
         
         client = OpenAI(**client_kwargs)
         
+        # Truncate texts that exceed model token limit
+        # DashScope text-embedding-v3 max: 8192 tokens; ~1.5 chars/token for Chinese
+        MAX_CHARS = 6000
+        texts = [t[:MAX_CHARS] if len(t) > MAX_CHARS else t for t in texts]
+        
         # Prepare API call parameters
         api_params = {
             "input": texts,
             "model": self.model,
         }
         
-        # Add dimensions if specified (only for text-embedding-3-* models)
-        # text-embedding-ada-002 does NOT support the dimensions parameter
+        # Add dimensions if specified
+        # Supported by: OpenAI text-embedding-3-*, DashScope text-embedding-v*
+        # NOT supported by: text-embedding-ada-002
         dimensions = kwargs.get("dimensions", self.dimensions)
-        if dimensions is not None and self.model.startswith("text-embedding-3"):
+        if dimensions is not None and (
+            self.model.startswith("text-embedding-3")
+            or self.model.startswith("text-embedding-v")
+        ):
             api_params["dimensions"] = dimensions
         
         # Call OpenAI API
