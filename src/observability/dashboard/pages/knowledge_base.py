@@ -80,6 +80,7 @@ def _get_state() -> Dict[str, Any]:
             "file_logs": [],     # list of "✅ ..." / "❌ ..." strings
             "results": {"success": 0, "skipped": 0, "failed": 0, "errors": []},
             "total_files": 0,
+            "stop_requested": False,  # 停止信号：当前文件完成后停止
         }
     return st.session_state[_STATE_KEY]
 
@@ -94,6 +95,7 @@ def _reset_state() -> None:
         "file_logs": [],
         "results": {"success": 0, "skipped": 0, "failed": 0, "errors": []},
         "total_files": 0,
+        "stop_requested": False,
     }
 
 
@@ -130,6 +132,12 @@ def _run_ingestion_thread(
     }
 
     for idx, fpath_str in enumerate(files):
+        # 检查停止信号
+        if state.get("stop_requested"):
+            state["progress_text"] = f"⏹️ 已停止 — 完成 {idx}/{total} 个文件"
+            state["file_logs"].append(f"⏹️ 用户请求停止，已完成 {idx}/{total} 个文件")
+            break
+        
         fpath = Path(fpath_str)
         file_label = fpath.name
         state["progress"] = idx / total
@@ -208,9 +216,15 @@ def _render_ingestion_progress() -> None:
             for log_line in state["file_logs"]:
                 st.markdown(log_line)
 
-    # ── Auto-refresh while running ────────────────────────────
+    # ── Stop button ───────────────────────────────────────────
     if state["running"]:
-        st.info("⏳ 知识库构建中… 你可以切换到其他页面，回来后进度不会丢失。")
+        col_stop, col_info = st.columns([1, 4])
+        with col_stop:
+            if st.button("⏹️ 停止摄取", type="secondary", use_container_width=True):
+                state["stop_requested"] = True
+                st.warning("⏳ 已发送停止信号，将在当前文件完成后停止…")
+        with col_info:
+            st.info("⏳ 知识库构建中… 点击左侧按钮可安全停止。")
         time.sleep(1.5)
         st.rerun()
 

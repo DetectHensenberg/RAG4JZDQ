@@ -46,15 +46,39 @@ SYSTEM_PROMPT = """你是一位专业的系统方案架构师。你的任务是�
 """
 
 
-def _build_context(results: list) -> str:
-    """Build context string from retrieval results."""
+def _build_context(results: list, max_chars: int = 8000) -> str:
+    """Build context string from retrieval results.
+    
+    Args:
+        results: List of retrieval results
+        max_chars: Maximum context length in characters (default 8000)
+    
+    Returns:
+        Context string with truncated chunks if needed
+    """
     context_parts = []
+    total_chars = 0
+    
     for i, r in enumerate(results):
         source = r.metadata.get("source_path", "未知来源")
         source_name = Path(source).name if source != "未知来源" else source
+        
+        # Truncate chunk if it would exceed max_chars
+        chunk_text = r.text
+        remaining = max_chars - total_chars
+        if remaining <= 0:
+            break
+        if len(chunk_text) > remaining:
+            chunk_text = chunk_text[:remaining] + "…"
+        
         context_parts.append(
-            f"【参考资料 {i + 1}】(来源: {source_name})\n{r.text}"
+            f"【参考资料 {i + 1}】(来源: {source_name})\n{chunk_text}"
         )
+        total_chars += len(chunk_text)
+        
+        if total_chars >= max_chars:
+            break
+    
     return "\n\n---\n\n".join(context_parts)
 
 

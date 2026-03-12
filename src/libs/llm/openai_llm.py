@@ -211,25 +211,43 @@ class OpenAILLM(BaseLLM):
             "max_tokens": max_tokens,
         }
         
-        try:
-            with httpx.Client(timeout=60.0) as client:
-                response = client.post(url, json=payload, headers=headers)
-                
-                if response.status_code != 200:
-                    error_detail = self._parse_error_response(response)
-                    raise OpenAILLMError(
-                        f"[OpenAI] API error (HTTP {response.status_code}): {error_detail}"
-                    )
-                
-                return response.json()
-        except httpx.TimeoutException as e:
-            raise OpenAILLMError(
-                f"[OpenAI] Request timed out after 60 seconds"
-            ) from e
-        except httpx.RequestError as e:
-            raise OpenAILLMError(
-                f"[OpenAI] Connection failed: {type(e).__name__}: {e}"
-            ) from e
+        # Retry logic for network issues
+        max_retries = 2
+        last_error = None
+        
+        for attempt in range(max_retries + 1):
+            try:
+                timeout = 120.0  # Increased from 60s to 120s
+                with httpx.Client(timeout=timeout) as client:
+                    response = client.post(url, json=payload, headers=headers)
+                    
+                    if response.status_code != 200:
+                        error_detail = self._parse_error_response(response)
+                        raise OpenAILLMError(
+                            f"[LLM:{self.model}] API error (HTTP {response.status_code}): {error_detail}"
+                        )
+                    
+                    return response.json()
+            except httpx.TimeoutException as e:
+                last_error = e
+                if attempt < max_retries:
+                    import time
+                    time.sleep(2)  # Wait before retry
+                    continue
+                raise OpenAILLMError(
+                    f"[LLM:{self.model}] Request timed out after {timeout} seconds (retried {max_retries} times)"
+                ) from e
+            except httpx.RequestError as e:
+                last_error = e
+                if attempt < max_retries:
+                    import time
+                    time.sleep(2)  # Wait before retry
+                    continue
+                raise OpenAILLMError(
+                    f"[LLM:{self.model}] Connection failed: {type(e).__name__}: {e}"
+                ) from e
+        
+        raise OpenAILLMError(f"[LLM:{self.model}] Failed after {max_retries} retries: {last_error}")
     
     def _parse_error_response(self, response: Any) -> str:
         """Parse error details from API response.

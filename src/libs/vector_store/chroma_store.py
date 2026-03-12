@@ -114,8 +114,21 @@ class ChromaStore(BaseVectorStore):
                 settings=ChromaSettings(
                     anonymized_telemetry=False,
                     allow_reset=True,
+                    # Enable SQLite WAL mode for better write stability on Windows
+                    # This prevents index corruption when process is terminated
+                    is_persistent=True,
                 )
             )
+            # Manually enable WAL mode on the SQLite database
+            # ChromaDB doesn't expose this directly, so we do it via sqlite3
+            import sqlite3
+            db_path = self.persist_directory / "chroma.sqlite3"
+            if db_path.exists():
+                conn = sqlite3.connect(str(db_path))
+                conn.execute("PRAGMA journal_mode=WAL;")
+                conn.execute("PRAGMA synchronous=NORMAL;")
+                conn.close()
+                logger.debug("SQLite WAL mode enabled for ChromaDB")
         except Exception as e:
             raise RuntimeError(
                 f"Failed to initialize ChromaDB client at '{self.persist_directory}': {e}"

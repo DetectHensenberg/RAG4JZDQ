@@ -169,7 +169,7 @@ class OpenAIEmbedding(BaseEmbedding):
             response = client.embeddings.create(**api_params)
         except Exception as e:
             raise OpenAIEmbeddingError(
-                f"OpenAI Embeddings API call failed: {e}"
+                f"[Embedding:{self.model}] API call failed: {e}"
             ) from e
         
         # Extract embeddings from response
@@ -178,13 +178,13 @@ class OpenAIEmbedding(BaseEmbedding):
             embeddings = [item.embedding for item in response.data]
         except (AttributeError, KeyError) as e:
             raise OpenAIEmbeddingError(
-                f"Failed to parse OpenAI Embeddings API response: {e}"
+                f"[Embedding:{self.model}] Failed to parse API response: {e}"
             ) from e
         
         # Verify output matches input length
         if len(embeddings) != len(texts):
             raise OpenAIEmbeddingError(
-                f"Output length mismatch: expected {len(texts)}, got {len(embeddings)}"
+                f"[Embedding:{self.model}] Output length mismatch: expected {len(texts)}, got {len(embeddings)}"
             )
         
         return embeddings
