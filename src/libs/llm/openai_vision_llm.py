@@ -229,11 +229,15 @@ class OpenAIVisionLLM(BaseVisionLLM):
             raise OpenAIVisionLLMError(
                 f"[OpenAI Vision] Unexpected response format: missing key {e}"
             ) from e
-        except Exception as e:
-            if isinstance(e, OpenAIVisionLLMError):
-                raise
+        except OpenAIVisionLLMError:
+            raise
+        except (ConnectionError, TimeoutError) as e:
             raise OpenAIVisionLLMError(
-                f"[OpenAI Vision] API call failed: {type(e).__name__}: {e}"
+                f"[Vision:{getattr(self, 'model', 'unknown')}] Network error: {type(e).__name__}: {e}"
+            ) from e
+        except (ValueError, TypeError, IndexError) as e:
+            raise OpenAIVisionLLMError(
+                f"[Vision:{getattr(self, 'model', 'unknown')}] Data error: {type(e).__name__}: {e}"
             ) from e
     
     def preprocess_image(
@@ -308,9 +312,15 @@ class OpenAIVisionLLM(BaseVisionLLM):
                 return base64.b64encode(image_bytes).decode("utf-8")
             else:
                 raise ValueError("ImageInput has no valid data source")
-        except Exception as e:
+        except OpenAIVisionLLMError:
+            raise
+        except (FileNotFoundError, IOError) as e:
             raise OpenAIVisionLLMError(
-                f"[OpenAI Vision] Failed to encode image: {e}"
+                f"[OpenAI Vision] Image file error: {e}"
+            ) from e
+        except (ValueError, TypeError) as e:
+            raise OpenAIVisionLLMError(
+                f"[OpenAI Vision] Image encoding error: {e}"
             ) from e
     
     def _call_api(

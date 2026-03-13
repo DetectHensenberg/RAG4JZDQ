@@ -200,12 +200,14 @@ class ImageStorage:
                 shutil.copy2(source_path, image_path)
             else:
                 raise ValueError(f"Unsupported image_data type: {type(image_data)}")
-        except Exception as e:
+        except (IOError, FileNotFoundError, ValueError, shutil.Error) as e:
             raise IOError(f"Failed to save image {image_id}: {e}")
         
-        # Store absolute path for reliable retrieval
-        # (relative paths would fail with temp directories in tests)
-        stored_path = str(image_path.resolve())
+        # Store path relative to images_root for portability
+        try:
+            stored_path = str(image_path.relative_to(self.images_root))
+        except ValueError:
+            stored_path = str(image_path.resolve())
         
         # Register in database
         now = datetime.now(timezone.utc).isoformat()
@@ -275,8 +277,11 @@ class ImageStorage:
         if not path.exists():
             raise FileNotFoundError(f"Image file not found: {file_path}")
         
-        # Store absolute path for reliable retrieval
-        stored_path = str(path.resolve())
+        # Store path relative to images_root for portability
+        try:
+            stored_path = str(path.relative_to(self.images_root))
+        except ValueError:
+            stored_path = str(path.resolve())
         
         # Register in database
         now = datetime.now(timezone.utc).isoformat()
@@ -301,11 +306,14 @@ class ImageStorage:
     def get_image_path(self, image_id: str) -> Optional[str]:
         """Get filesystem path for an image by ID.
         
+        Handles both relative paths (new format) and absolute paths
+        (legacy format) transparently.
+        
         Args:
             image_id: Unique identifier for the image.
             
         Returns:
-            Relative file path if image exists, None otherwise.
+            Absolute file path if image exists, None otherwise.
             
         Example:
             >>> path = storage.get_image_path("img1")
@@ -320,7 +328,14 @@ class ImageStorage:
                 (image_id,)
             )
             result = cursor.fetchone()
-            return result[0] if result else None
+            if not result:
+                return None
+            stored_path = result[0]
+            # Resolve relative paths against images_root
+            p = Path(stored_path)
+            if not p.is_absolute():
+                p = self.images_root / p
+            return str(p)
         finally:
             conn.close()
     

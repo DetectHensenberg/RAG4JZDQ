@@ -50,7 +50,14 @@ class LoaderFactory:
         Raises:
             ValueError: If the file type is not supported.
         """
-        suffix = Path(file_path).suffix.lower()
+        # Validate file path: must exist and not contain traversal sequences
+        resolved = Path(file_path).resolve()
+        if ".." in str(file_path):
+            raise ValueError(f"Path traversal detected in file path: {file_path}")
+        if not resolved.exists():
+            raise FileNotFoundError(f"File not found: {file_path}")
+        
+        suffix = resolved.suffix.lower()
 
         if suffix in (".pdf", ".docx", ".txt", ".md"):
             from src.libs.loader.pdf_loader import PdfLoader

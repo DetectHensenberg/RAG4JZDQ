@@ -97,6 +97,20 @@ class OpenAIEmbedding(BaseEmbedding):
         
         # Store any additional kwargs for future use
         self._extra_config = kwargs
+        
+        # Pre-initialize OpenAI client for connection reuse
+        try:
+            from openai import OpenAI
+            client_kwargs = {
+                "api_key": self.api_key,
+                "base_url": self.base_url,
+            }
+            if self._use_azure_auth and self.api_version:
+                client_kwargs["default_query"] = {"api-version": self.api_version}
+                client_kwargs["default_headers"] = {"api-key": self.api_key}
+            self._client = OpenAI(**client_kwargs)
+        except ImportError:
+            self._client = None  # Will be created lazily in embed()
     
     def embed(
         self,
@@ -122,26 +136,24 @@ class OpenAIEmbedding(BaseEmbedding):
         # Validate input
         self.validate_texts(texts)
         
-        # Import OpenAI client (lazy import to avoid dependency at module level)
-        try:
-            from openai import OpenAI
-        except ImportError as e:
-            raise RuntimeError(
-                "OpenAI Python package not installed. "
-                "Install with: pip install openai"
-            ) from e
-        
-        # Initialize OpenAI client
-        client_kwargs = {
-            "api_key": self.api_key,
-            "base_url": self.base_url,
-        }
-        # Azure-compatible mode: add api-version query param and api-key header
-        if self._use_azure_auth and self.api_version:
-            client_kwargs["default_query"] = {"api-version": self.api_version}
-            client_kwargs["default_headers"] = {"api-key": self.api_key}
-        
-        client = OpenAI(**client_kwargs)
+        # Use pre-initialized client or create one lazily
+        if self._client is None:
+            try:
+                from openai import OpenAI
+            except ImportError as e:
+                raise RuntimeError(
+                    "OpenAI Python package not installed. "
+                    "Install with: pip install openai"
+                ) from e
+            client_kwargs = {
+                "api_key": self.api_key,
+                "base_url": self.base_url,
+            }
+            if self._use_azure_auth and self.api_version:
+                client_kwargs["default_query"] = {"api-version": self.api_version}
+                client_kwargs["default_headers"] = {"api-key": self.api_key}
+            self._client = OpenAI(**client_kwargs)
+        client = self._client
         
         # Truncate texts that exceed model token limit
         # DashScope text-embedding-v3 max: 8192 tokens; ~1.5 chars/token for Chinese
@@ -167,9 +179,15 @@ class OpenAIEmbedding(BaseEmbedding):
         # Call OpenAI API
         try:
             response = client.embeddings.create(**api_params)
-        except Exception as e:
+        except OpenAIEmbeddingError:
+            raise
+        except (ConnectionError, TimeoutError) as e:
             raise OpenAIEmbeddingError(
-                f"[Embedding:{self.model}] API call failed: {e}"
+                f"[Embedding:{self.model}] Network error: {type(e).__name__}: {e}"
+            ) from e
+        except (ValueError, TypeError) as e:
+            raise OpenAIEmbeddingError(
+                f"[Embedding:{self.model}] Parameter error: {type(e).__name__}: {e}"
             ) from e
         
         # Extract embeddings from response

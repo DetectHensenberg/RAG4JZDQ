@@ -129,7 +129,7 @@ class ChromaStore(BaseVectorStore):
                 conn.execute("PRAGMA synchronous=NORMAL;")
                 conn.close()
                 logger.debug("SQLite WAL mode enabled for ChromaDB")
-        except Exception as e:
+        except (RuntimeError, OSError, sqlite3.Error) as e:
             raise RuntimeError(
                 f"Failed to initialize ChromaDB client at '{self.persist_directory}': {e}"
             ) from e
@@ -140,7 +140,7 @@ class ChromaStore(BaseVectorStore):
                 name=self.collection_name,
                 metadata={"hnsw:space": "cosine"}  # Use cosine similarity
             )
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             raise RuntimeError(
                 f"Failed to get or create collection '{self.collection_name}': {e}"
             ) from e
@@ -149,6 +149,10 @@ class ChromaStore(BaseVectorStore):
             f"ChromaStore initialized successfully. "
             f"Collection count: {self.collection.count()}"
         )
+        
+        # Register graceful shutdown to prevent index corruption
+        import atexit
+        atexit.register(self.close)
     
     def upsert(
         self,
@@ -208,7 +212,9 @@ class ChromaStore(BaseVectorStore):
                 documents=documents,
             )
             logger.debug(f"Successfully upserted {len(records)} records to ChromaDB")
-        except Exception as e:
+            # Flush WAL to disk after each upsert to reduce corruption risk
+            self._wal_checkpoint()
+        except (RuntimeError, ValueError) as e:
             raise RuntimeError(
                 f"Failed to upsert {len(records)} records to ChromaDB: {e}"
             ) from e
@@ -255,7 +261,7 @@ class ChromaStore(BaseVectorStore):
                 where=where_clause,
                 include=["metadatas", "distances", "documents"]
             )
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             raise RuntimeError(
                 f"Failed to query ChromaDB with top_k={top_k}: {e}"
             ) from e
@@ -310,7 +316,7 @@ class ChromaStore(BaseVectorStore):
         try:
             self.collection.delete(ids=[str(id_) for id_ in ids])
             logger.debug(f"Successfully deleted {len(ids)} records from ChromaDB")
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             raise RuntimeError(
                 f"Failed to delete {len(ids)} records from ChromaDB: {e}"
             ) from e
@@ -341,7 +347,7 @@ class ChromaStore(BaseVectorStore):
                 metadata={"hnsw:space": "cosine"}
             )
             logger.info(f"Successfully cleared collection '{target_collection}'")
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             raise RuntimeError(
                 f"Failed to clear collection '{collection_name or self.collection_name}': {e}"
             ) from e
@@ -384,7 +390,7 @@ class ChromaStore(BaseVectorStore):
                 f"matching {filter_dict}"
             )
             return len(matching_ids)
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             raise RuntimeError(
                 f"Failed to delete by metadata {filter_dict}: {e}"
             ) from e
@@ -501,7 +507,7 @@ class ChromaStore(BaseVectorStore):
                 ids=str_ids,
                 include=["metadatas", "documents"]
             )
-        except Exception as e:
+        except (RuntimeError, ValueError) as e:
             raise RuntimeError(
                 f"Failed to get records by IDs from ChromaDB: {e}"
             ) from e
@@ -532,3 +538,36 @@ class ChromaStore(BaseVectorStore):
         
         logger.debug(f"Retrieved {len([r for r in output if r])} of {len(ids)} records by IDs")
         return output
+    
+    def _wal_checkpoint(self) -> None:
+        """Flush SQLite WAL to main database file.
+        
+        This reduces the risk of index corruption if the process is
+        terminated unexpectedly (e.g., Ctrl+C, crash, power loss).
+        Uses PASSIVE mode which doesn't block readers.
+        """
+        try:
+            import sqlite3
+            db_path = self.persist_directory / "chroma.sqlite3"
+            if db_path.exists():
+                conn = sqlite3.connect(str(db_path))
+                conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                conn.close()
+        except Exception:
+            pass  # Best-effort, don't fail the operation
+    
+    def close(self) -> None:
+        """Gracefully close ChromaDB, flushing all pending writes.
+        
+        Called automatically via atexit or manually before shutdown.
+        """
+        try:
+            import sqlite3
+            db_path = self.persist_directory / "chroma.sqlite3"
+            if db_path.exists():
+                conn = sqlite3.connect(str(db_path))
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+                conn.close()
+                logger.info("ChromaStore closed: WAL checkpoint completed")
+        except Exception as e:
+            logger.warning(f"ChromaStore close warning: {e}")

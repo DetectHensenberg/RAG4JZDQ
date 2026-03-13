@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -222,7 +223,7 @@ class Settings:
                 provider=_require_str(vision_llm, "provider", "vision_llm"),
                 model=_require_str(vision_llm, "model", "vision_llm"),
                 max_image_size=_require_int(vision_llm, "max_image_size", "vision_llm"),
-                api_key=vision_llm.get("api_key"),
+                api_key=_resolve_api_key(vision_llm.get("api_key")),
                 api_version=vision_llm.get("api_version"),
                 azure_endpoint=vision_llm.get("azure_endpoint"),
                 deployment_name=vision_llm.get("deployment_name"),
@@ -235,7 +236,7 @@ class Settings:
                 model=_require_str(llm, "model", "llm"),
                 temperature=_require_number(llm, "temperature", "llm"),
                 max_tokens=_require_int(llm, "max_tokens", "llm"),
-                api_key=llm.get("api_key"),
+                api_key=_resolve_api_key(llm.get("api_key")),
                 api_version=llm.get("api_version"),
                 azure_endpoint=llm.get("azure_endpoint"),
                 deployment_name=llm.get("deployment_name"),
@@ -245,7 +246,7 @@ class Settings:
                 provider=_require_str(embedding, "provider", "embedding"),
                 model=_require_str(embedding, "model", "embedding"),
                 dimensions=_require_int(embedding, "dimensions", "embedding"),
-                api_key=embedding.get("api_key"),
+                api_key=_resolve_api_key(embedding.get("api_key")),
                 api_version=embedding.get("api_version"),
                 azure_endpoint=embedding.get("azure_endpoint"),
                 deployment_name=embedding.get("deployment_name"),
@@ -286,6 +287,38 @@ class Settings:
         return settings
 
 
+def _load_dotenv() -> None:
+    """Load .env file from repo root if it exists."""
+    env_path = REPO_ROOT / ".env"
+    if not env_path.exists():
+        return
+    with env_path.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" in line:
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip()
+                # Don't override existing env vars
+                if key and key not in os.environ:
+                    os.environ[key] = value
+
+
+def _resolve_api_key(config_value: Optional[str]) -> Optional[str]:
+    """Resolve API key: use config value if non-empty, else fall back to env var.
+    
+    Priority:
+    1. Explicit value in settings.yaml (non-empty)
+    2. DASHSCOPE_API_KEY environment variable
+    3. OPENAI_API_KEY environment variable
+    """
+    if config_value and config_value.strip():
+        return config_value.strip()
+    return os.environ.get("DASHSCOPE_API_KEY") or os.environ.get("OPENAI_API_KEY")
+
+
 def validate_settings(settings: Settings) -> None:
     """Validate settings and raise SettingsError if invalid."""
 
@@ -312,6 +345,9 @@ def load_settings(path: str | Path | None = None) -> Settings:
         path: Path to settings YAML.  Defaults to
             ``<repo>/config/settings.yaml`` (absolute, CWD-independent).
     """
+    # Load .env file first so env vars are available
+    _load_dotenv()
+    
     settings_path = Path(path) if path is not None else DEFAULT_SETTINGS_PATH
     if not settings_path.is_absolute():
         settings_path = resolve_path(settings_path)

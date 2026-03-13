@@ -106,7 +106,7 @@ class PdfLoader(BaseLoader):
         try:
             result = self._markitdown.convert(str(path))
             text_content = result.text_content if hasattr(result, 'text_content') else str(result)
-        except Exception as e:
+        except (IOError, OSError, ValueError, RuntimeError) as e:
             logger.error(f"Failed to parse PDF {path}: {e}")
             raise RuntimeError(f"PDF parsing failed: {e}") from e
         

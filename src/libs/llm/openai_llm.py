@@ -10,6 +10,8 @@ from __future__ import annotations
 import os
 from typing import Any, Dict, List, Optional
 
+import httpx
+
 from src.libs.llm.base_llm import BaseLLM, ChatResponse, Message
 
 
@@ -103,6 +105,12 @@ class OpenAILLM(BaseLLM):
         
         # Store any additional kwargs for future use
         self._extra_config = kwargs
+        
+        # Persistent HTTP client for connection pooling
+        self._http_client = httpx.Client(
+            timeout=120.0,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
     
     def chat(
         self,
@@ -156,13 +164,93 @@ class OpenAILLM(BaseLLM):
             )
         except KeyError as e:
             raise OpenAILLMError(
-                f"[OpenAI] Unexpected response format: missing key {e}"
+                f"[LLM:{self.model}] Unexpected response format: missing key {e}"
             ) from e
-        except Exception as e:
-            if isinstance(e, OpenAILLMError):
-                raise
+        except OpenAILLMError:
+            raise
+        except (httpx.TimeoutException, httpx.RequestError) as e:
             raise OpenAILLMError(
-                f"[OpenAI] API call failed: {type(e).__name__}: {e}"
+                f"[LLM:{self.model}] Network error: {type(e).__name__}: {e}"
+            ) from e
+        except (ValueError, TypeError, IndexError) as e:
+            raise OpenAILLMError(
+                f"[LLM:{self.model}] Data error: {type(e).__name__}: {e}"
+            ) from e
+    
+    def chat_stream(
+        self,
+        messages: List[Message],
+        trace: Optional[Any] = None,
+        **kwargs: Any,
+    ):
+        """Stream a chat completion response token by token.
+        
+        Uses SSE (Server-Sent Events) for real-time token streaming.
+        
+        Args:
+            messages: List of conversation messages.
+            trace: Optional TraceContext for observability.
+            **kwargs: Override parameters (temperature, max_tokens, etc.).
+        
+        Yields:
+            Text chunks as they arrive from the API.
+        """
+        self.validate_messages(messages)
+        
+        temperature = kwargs.get("temperature", self.default_temperature)
+        max_tokens = kwargs.get("max_tokens", self.default_max_tokens)
+        model = kwargs.get("model", self.model)
+        
+        api_messages = [{"role": m.role, "content": m.content} for m in messages]
+        
+        url = f"{self.base_url.rstrip('/')}/chat/completions"
+        if self.api_version:
+            url += f"?api-version={self.api_version}"
+        
+        if self._use_azure_auth:
+            headers = {"api-key": self.api_key, "Content-Type": "application/json"}
+        else:
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        
+        payload = {
+            "model": model,
+            "messages": api_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        
+        try:
+            with self._http_client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code != 200:
+                    response.read()
+                    error_detail = self._parse_error_response(response)
+                    raise OpenAILLMError(
+                        f"[LLM:{self.model}] Stream API error (HTTP {response.status_code}): {error_detail}"
+                    )
+                
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data = line[6:]  # Remove "data: " prefix
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        import json
+                        chunk = json.loads(data)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        continue
+        except httpx.TimeoutException as e:
+            raise OpenAILLMError(
+                f"[LLM:{self.model}] Stream request timed out"
+            ) from e
+        except httpx.RequestError as e:
+            raise OpenAILLMError(
+                f"[LLM:{self.model}] Stream connection failed: {type(e).__name__}: {e}"
             ) from e
     
     def _call_api(
@@ -188,8 +276,6 @@ class OpenAILLM(BaseLLM):
         Raises:
             OpenAILLMError: If the API call fails.
         """
-        import httpx
-        
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         if self.api_version:
             url += f"?api-version={self.api_version}"
@@ -217,17 +303,15 @@ class OpenAILLM(BaseLLM):
         
         for attempt in range(max_retries + 1):
             try:
-                timeout = 120.0  # Increased from 60s to 120s
-                with httpx.Client(timeout=timeout) as client:
-                    response = client.post(url, json=payload, headers=headers)
-                    
-                    if response.status_code != 200:
-                        error_detail = self._parse_error_response(response)
-                        raise OpenAILLMError(
-                            f"[LLM:{self.model}] API error (HTTP {response.status_code}): {error_detail}"
-                        )
-                    
-                    return response.json()
+                response = self._http_client.post(url, json=payload, headers=headers)
+                
+                if response.status_code != 200:
+                    error_detail = self._parse_error_response(response)
+                    raise OpenAILLMError(
+                        f"[LLM:{self.model}] API error (HTTP {response.status_code}): {error_detail}"
+                    )
+                
+                return response.json()
             except httpx.TimeoutException as e:
                 last_error = e
                 if attempt < max_retries:
@@ -235,7 +319,7 @@ class OpenAILLM(BaseLLM):
                     time.sleep(2)  # Wait before retry
                     continue
                 raise OpenAILLMError(
-                    f"[LLM:{self.model}] Request timed out after {timeout} seconds (retried {max_retries} times)"
+                    f"[LLM:{self.model}] Request timed out after 120 seconds (retried {max_retries} times)"
                 ) from e
             except httpx.RequestError as e:
                 last_error = e

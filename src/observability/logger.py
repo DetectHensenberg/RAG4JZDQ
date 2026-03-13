@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,32 @@ from src.core.settings import resolve_path
 
 # Default path for traces file (absolute, CWD-independent)
 _DEFAULT_TRACES_PATH = resolve_path("logs/traces.jsonl")
+
+
+# ── API Key masking filter ──────────────────────────────────────────
+
+_SECRET_PATTERNS = [
+    re.compile(r'(sk-)[a-zA-Z0-9]{20,}'),          # DashScope / OpenAI keys
+    re.compile(r'(Bearer\s+)[a-zA-Z0-9\-_.]{20,}'), # Authorization headers
+    re.compile(r'(api-key["\s:]+)[a-zA-Z0-9\-_.]{20,}', re.IGNORECASE),
+]
+
+
+class _SecretFilter(logging.Filter):
+    """Mask API keys and tokens in log messages."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.msg, str):
+            for pat in _SECRET_PATTERNS:
+                record.msg = pat.sub(lambda m: m.group(1) + '***MASKED***', record.msg)
+        if record.args:
+            args = list(record.args) if isinstance(record.args, tuple) else [record.args]
+            for i, arg in enumerate(args):
+                if isinstance(arg, str):
+                    for pat in _SECRET_PATTERNS:
+                        args[i] = pat.sub(lambda m: m.group(1) + '***MASKED***', args[i])
+            record.args = tuple(args)
+        return True
 
 
 # ── Human-readable logger (existing) ────────────────────────────────
@@ -51,7 +78,11 @@ def get_logger(name: str = "modular-rag", log_level: Optional[str] = None) -> lo
     # Suppress httpx logs (contains sensitive endpoint URLs)
     logging.getLogger("httpx").setLevel(logging.WARNING)
 
-    return logging.getLogger(name)
+    logger = logging.getLogger(name)
+    # Add secret masking filter (idempotent check)
+    if not any(isinstance(f, _SecretFilter) for f in logger.filters):
+        logger.addFilter(_SecretFilter())
+    return logger
 
 
 # ── JSON Lines formatter ────────────────────────────────────────────

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Generator, List, Optional
 
 
 @dataclass
@@ -75,6 +75,29 @@ class BaseLLM(ABC):
             RuntimeError: If the LLM provider call fails.
         """
         pass
+    
+    def chat_stream(
+        self,
+        messages: List[Message],
+        trace: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> Generator[str, None, None]:
+        """Stream a chat completion response token by token.
+        
+        Args:
+            messages: List of conversation messages.
+            trace: Optional TraceContext for observability.
+            **kwargs: Provider-specific parameters.
+        
+        Yields:
+            Text chunks as they arrive from the provider.
+        
+        Note:
+            Default implementation falls back to non-streaming chat().
+            Subclasses should override for true streaming support.
+        """
+        response = self.chat(messages, trace=trace, **kwargs)
+        yield response.content
     
     def validate_messages(self, messages: List[Message]) -> None:
         """Validate message list structure.

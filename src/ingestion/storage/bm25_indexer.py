@@ -541,7 +541,7 @@ class BM25Indexer:
             # Atomic rename
             temp_path.replace(index_path)
             
-        except Exception as e:
+        except (IOError, OSError, json.JSONDecodeError, TypeError) as e:
             # Clean up temp file if write failed
             if temp_path.exists():
                 temp_path.unlink()

@@ -12,6 +12,7 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 import re
 import tempfile
 import time
@@ -221,7 +222,8 @@ def _render_rich_answer(answer: str) -> None:
             # Extract mermaid code and render
             m = _MERMAID_PATTERN.match(seg_stripped)
             if m:
-                st.markdown(seg_stripped)  # Streamlit natively renders ```mermaid
+                mermaid_code = m.group(1).strip()
+                st.mermaid(mermaid_code)  # Use st.mermaid() for proper rendering
             else:
                 st.markdown(seg_stripped)
         elif seg_stripped.startswith("```chart"):
@@ -522,9 +524,97 @@ def render() -> None:
             help="根据方案内容自动生成 AI 配图（需消耗通义万相额度）"
         )
 
-    # ── Chat history ───────────────────────────────────────────
+    # ── Chat history (persisted to SQLite) ───────────────────────
+    import sqlite3 as _sqlite3
+    _history_db = Path("data/qa_history.db")
+    _history_db.parent.mkdir(parents=True, exist_ok=True)
+    
+    def _init_history_db() -> None:
+        conn = _sqlite3.connect(str(_history_db))
+        conn.execute("""CREATE TABLE IF NOT EXISTS qa_history (
+            id INTEGER PRIMARY KEY,
+            question TEXT NOT NULL,
+            answer TEXT NOT NULL,
+            references_json TEXT DEFAULT '[]',
+            kb_images_json TEXT DEFAULT '[]',
+            ai_image_url TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""")
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.commit()
+        conn.close()
+    
+    def _load_history() -> List[Dict]:
+        try:
+            _init_history_db()
+            conn = _sqlite3.connect(str(_history_db))
+            rows = conn.execute(
+                "SELECT id, question, answer, references_json, kb_images_json, ai_image_url FROM qa_history ORDER BY id"
+            ).fetchall()
+            conn.close()
+            history = []
+            for row in rows:
+                history.append({
+                    "id": row[0],
+                    "question": row[1],
+                    "answer": row[2],
+                    "references": json.loads(row[3]) if row[3] else [],
+                    "kb_images": json.loads(row[4]) if row[4] else [],
+                    "ai_image_url": row[5] or None,
+                })
+            return history
+        except Exception as e:
+            logger.warning(f"Failed to load QA history: {e}")
+            return []
+    
+    def _save_entry(entry: Dict) -> None:
+        try:
+            _init_history_db()
+            conn = _sqlite3.connect(str(_history_db))
+            conn.execute(
+                "INSERT OR REPLACE INTO qa_history (id, question, answer, references_json, kb_images_json, ai_image_url) VALUES (?,?,?,?,?,?)",
+                (entry["id"], entry["question"], entry["answer"],
+                 json.dumps(entry.get("references", []), ensure_ascii=False),
+                 json.dumps(entry.get("kb_images", []), ensure_ascii=False),
+                 entry.get("ai_image_url", ""))
+            )
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Failed to save QA entry: {e}")
+    
+    def _clear_history() -> None:
+        try:
+            conn = _sqlite3.connect(str(_history_db))
+            conn.execute("DELETE FROM qa_history")
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logger.error(f"Failed to clear QA history: {e}")
+    
+    # Migrate from old JSON if exists
+    _old_json = Path("data/qa_history.json")
+    if _old_json.exists() and (not _history_db.exists() or os.path.getsize(str(_history_db)) == 0):
+        try:
+            _init_history_db()
+            with open(_old_json, "r", encoding="utf-8") as f:
+                old_data = json.load(f)
+            for entry in old_data:
+                _save_entry(entry)
+            _old_json.rename(_old_json.with_suffix(".json.migrated"))
+            logger.info(f"Migrated {len(old_data)} QA entries from JSON to SQLite")
+        except Exception:
+            pass
+    
     if "qa_history" not in st.session_state:
-        st.session_state["qa_history"] = []
+        st.session_state["qa_history"] = _load_history()
+
+    # Clear history button in sidebar
+    with st.sidebar:
+        if st.button("🗑️ 清空对话历史", key="qa_clear_history"):
+            _clear_history()
+            st.session_state["qa_history"] = []
+            st.rerun()
 
     # Display chat history
     for entry in st.session_state["qa_history"]:
@@ -598,16 +688,44 @@ def render() -> None:
                 if not do_retrieve:
                     st.caption("💡 模型判断本次无需检索知识库")
 
-            spinner_text = "正在检索知识库并生成回答…" if do_retrieve else "正在生成回答…"
-            with st.spinner(spinner_text):
-                answer, references, raw_results = _generate_answer(
-                    question=question,
-                    collection=collection,
-                    top_k=top_k,
-                    max_tokens=max_tokens,
-                    uploaded_doc_text=uploaded_doc_text,
-                    do_retrieve=do_retrieve,
-                )
+            # Step 1: Retrieve context
+            references = []
+            raw_results = []
+            context = ""
+            if do_retrieve:
+                with st.spinner("正在检索知识库…"):
+                    try:
+                        hybrid_search = _get_hybrid_search(settings, collection)
+                        raw_results = hybrid_search.search(query=question, top_k=top_k)
+                        references = [
+                            {"source": r.metadata.get("source_path", "未知"), "score": r.score, "text": r.text}
+                            for r in raw_results
+                        ]
+                        context = _build_context(raw_results)
+                    except Exception as exc:
+                        logger.exception("Retrieval failed")
+                        st.error(f"❌ 知识库检索失败: {exc}")
+
+            # Step 2: Stream LLM answer
+            llm_key = "_qa_llm"
+            llm = st.session_state.get(llm_key)
+            if llm is None:
+                from src.libs.llm.llm_factory import LLMFactory
+                llm = LLMFactory.create(settings)
+                st.session_state[llm_key] = llm
+
+            messages = _build_messages(question, context, uploaded_doc_text)
+            
+            # Try streaming, fall back to non-streaming
+            try:
+                stream = llm.chat_stream(messages, max_tokens=max_tokens)
+                answer = st.write_stream(stream)
+            except Exception:
+                # Fallback: non-streaming
+                with st.spinner("正在生成回答…"):
+                    response = llm.chat(messages, max_tokens=max_tokens)
+                    answer = response.content
+                    st.markdown(answer)
 
             # Collect KB images from retrieval results
             kb_images: List[Dict[str, Any]] = []
@@ -639,8 +757,9 @@ def render() -> None:
 
             _render_entry(entry, key_suffix="latest")
 
-        # Save to history
+        # Save to history (persisted to SQLite)
         st.session_state["qa_history"].append(entry)
+        _save_entry(entry)
 
 
 def _generate_answer(

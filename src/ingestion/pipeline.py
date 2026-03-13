@@ -194,6 +194,76 @@ class IngestionPipeline:
         
         logger.info("Pipeline initialization complete!")
     
+    def _trace_stage(
+        self,
+        trace: Optional[TraceContext],
+        stage_name: str,
+        data: Dict[str, Any],
+        elapsed_ms: float = 0.0,
+    ) -> None:
+        """Record a pipeline stage in the trace context (if enabled)."""
+        if trace is not None:
+            trace.record_stage(stage_name, data, elapsed_ms=elapsed_ms)
+    
+    @staticmethod
+    def _chunk_details(chunks: List[Chunk]) -> List[Dict[str, Any]]:
+        """Build a serializable chunk summary for trace recording."""
+        return [
+            {
+                "chunk_id": c.id,
+                "text": c.text,
+                "char_len": len(c.text),
+                "chunk_index": c.metadata.get("chunk_index", i),
+            }
+            for i, c in enumerate(chunks)
+        ]
+    
+    @staticmethod
+    def _transform_details(
+        chunks: List[Chunk],
+        pre_refine_texts: Dict[str, str],
+    ) -> List[Dict[str, Any]]:
+        """Build transform stage chunk details for trace."""
+        return [
+            {
+                "chunk_id": c.id,
+                "text_before": pre_refine_texts.get(c.id, ""),
+                "text_after": c.text,
+                "char_len": len(c.text),
+                "refined_by": c.metadata.get("refined_by", ""),
+                "enriched_by": c.metadata.get("enriched_by", ""),
+                "title": c.metadata.get("title", ""),
+                "tags": c.metadata.get("tags", []),
+                "summary": c.metadata.get("summary", ""),
+            }
+            for c in chunks
+        ]
+    
+    @staticmethod
+    def _encoding_details(
+        chunks: List[Chunk],
+        dense_vectors: List,
+        sparse_stats: List[Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Build encoding stage per-chunk details for trace."""
+        details = []
+        for idx, c in enumerate(chunks):
+            detail: Dict[str, Any] = {
+                "chunk_id": c.id,
+                "char_len": len(c.text),
+            }
+            if idx < len(dense_vectors):
+                detail["dense_dim"] = len(dense_vectors[idx])
+            if idx < len(sparse_stats):
+                ss = sparse_stats[idx]
+                detail["doc_length"] = ss.get("doc_length", 0)
+                detail["unique_terms"] = ss.get("unique_terms", 0)
+                tf = ss.get("term_frequencies", {})
+                top_terms = sorted(tf.items(), key=lambda x: x[1], reverse=True)[:10]
+                detail["top_terms"] = [{"term": t, "freq": f} for t, f in top_terms]
+            details.append(detail)
+        return details
+    
     def run(
         self,
         file_path: str,
@@ -276,14 +346,13 @@ class IngestionPipeline:
                 "text_length": len(document.text),
                 "image_count": image_count
             }
-            if trace is not None:
-                trace.record_stage("load", {
-                    "method": "markitdown",
-                    "doc_id": document.id,
-                    "text_length": len(document.text),
-                    "image_count": image_count,
-                    "text_preview": document.text,
-                }, elapsed_ms=_elapsed)
+            self._trace_stage(trace, "load", {
+                "method": "markitdown",
+                "doc_id": document.id,
+                "text_length": len(document.text),
+                "image_count": image_count,
+                "text_preview": document.text,
+            }, elapsed_ms=_elapsed)
             
             # ─────────────────────────────────────────────────────────────
             # Stage 3: Chunking
@@ -304,21 +373,12 @@ class IngestionPipeline:
                 "chunk_count": len(chunks),
                 "avg_chunk_size": sum(len(c.text) for c in chunks) // len(chunks) if chunks else 0
             }
-            if trace is not None:
-                trace.record_stage("split", {
-                    "method": "recursive",
-                    "chunk_count": len(chunks),
-                    "avg_chunk_size": sum(len(c.text) for c in chunks) // len(chunks) if chunks else 0,
-                    "chunks": [
-                        {
-                            "chunk_id": c.id,
-                            "text": c.text,
-                            "char_len": len(c.text),
-                            "chunk_index": c.metadata.get("chunk_index", i),
-                        }
-                        for i, c in enumerate(chunks)
-                    ],
-                }, elapsed_ms=_elapsed)
+            self._trace_stage(trace, "split", {
+                "method": "recursive",
+                "chunk_count": len(chunks),
+                "avg_chunk_size": sum(len(c.text) for c in chunks) // len(chunks) if chunks else 0,
+                "chunks": self._chunk_details(chunks),
+            }, elapsed_ms=_elapsed)
             
             # ─────────────────────────────────────────────────────────────
             # Stage 4: Transform Pipeline
@@ -355,29 +415,15 @@ class IngestionPipeline:
                 "image_captioner": {"captioned_chunks": captioned}
             }
             _elapsed_transform = (time.monotonic() - _t0_transform) * 1000.0
-            if trace is not None:
-                trace.record_stage("transform", {
-                    "method": "refine+enrich+caption",
-                    "refined_by_llm": refined_by_llm,
-                    "refined_by_rule": refined_by_rule,
-                    "enriched_by_llm": enriched_by_llm,
-                    "enriched_by_rule": enriched_by_rule,
-                    "captioned_chunks": captioned,
-                    "chunks": [
-                        {
-                            "chunk_id": c.id,
-                            "text_before": _pre_refine_texts.get(c.id, ""),
-                            "text_after": c.text,
-                            "char_len": len(c.text),
-                            "refined_by": c.metadata.get("refined_by", ""),
-                            "enriched_by": c.metadata.get("enriched_by", ""),
-                            "title": c.metadata.get("title", ""),
-                            "tags": c.metadata.get("tags", []),
-                            "summary": c.metadata.get("summary", ""),
-                        }
-                        for c in chunks
-                    ],
-                }, elapsed_ms=_elapsed_transform)
+            self._trace_stage(trace, "transform", {
+                "method": "refine+enrich+caption",
+                "refined_by_llm": refined_by_llm,
+                "refined_by_rule": refined_by_rule,
+                "enriched_by_llm": enriched_by_llm,
+                "enriched_by_rule": enriched_by_rule,
+                "captioned_chunks": captioned,
+                "chunks": self._transform_details(chunks, _pre_refine_texts),
+            }, elapsed_ms=_elapsed_transform)
             
             # ─────────────────────────────────────────────────────────────
             # Stage 5: Encoding
@@ -401,35 +447,13 @@ class IngestionPipeline:
                 "dense_dimension": len(dense_vectors[0]) if dense_vectors else 0,
                 "sparse_doc_count": len(sparse_stats)
             }
-            if trace is not None:
-                # Build per-chunk encoding details (both dense & sparse)
-                chunk_details = []
-                for idx, c in enumerate(chunks):
-                    detail: dict = {
-                        "chunk_id": c.id,
-                        "char_len": len(c.text),
-                    }
-                    # Dense: vector dimension (same for all, but confirm per-chunk)
-                    if idx < len(dense_vectors):
-                        detail["dense_dim"] = len(dense_vectors[idx])
-                    # Sparse: BM25 term stats
-                    if idx < len(sparse_stats):
-                        ss = sparse_stats[idx]
-                        detail["doc_length"] = ss.get("doc_length", 0)
-                        detail["unique_terms"] = ss.get("unique_terms", 0)
-                        # Top-10 terms by frequency for inspection
-                        tf = ss.get("term_frequencies", {})
-                        top_terms = sorted(tf.items(), key=lambda x: x[1], reverse=True)[:10]
-                        detail["top_terms"] = [{"term": t, "freq": f} for t, f in top_terms]
-                    chunk_details.append(detail)
-
-                trace.record_stage("embed", {
-                    "method": "batch_processor",
-                    "dense_vector_count": len(dense_vectors),
-                    "dense_dimension": len(dense_vectors[0]) if dense_vectors else 0,
-                    "sparse_doc_count": len(sparse_stats),
-                    "chunks": chunk_details,
-                }, elapsed_ms=_elapsed)
+            self._trace_stage(trace, "embed", {
+                "method": "batch_processor",
+                "dense_vector_count": len(dense_vectors),
+                "dense_dimension": len(dense_vectors[0]) if dense_vectors else 0,
+                "sparse_doc_count": len(sparse_stats),
+                "chunks": self._encoding_details(chunks, dense_vectors, sparse_stats),
+            }, elapsed_ms=_elapsed)
             
             # ─────────────────────────────────────────────────────────────
             # Stage 6: Storage
@@ -462,14 +486,26 @@ class IngestionPipeline:
             for stat, vid in zip(sparse_stats, vector_ids):
                 stat["chunk_id"] = vid
 
-            # 6b: BM25 Index
+            # 6b: BM25 Index (with rollback on failure)
             logger.info("  6b. BM25 Index...")
-            self.bm25_indexer.add_documents(
-                sparse_stats,
-                collection=self.collection,
-                doc_id=document.id,
-                trace=trace,
-            )
+            try:
+                self.bm25_indexer.add_documents(
+                    sparse_stats,
+                    collection=self.collection,
+                    doc_id=document.id,
+                    trace=trace,
+                )
+            except Exception as bm25_err:
+                # Rollback: delete vectors from ChromaDB to maintain consistency
+                logger.error(f"BM25 index failed: {bm25_err}. Rolling back ChromaDB upsert...")
+                try:
+                    self.vector_upserter.vector_store.delete(vector_ids)
+                    logger.info(f"      Rollback: deleted {len(vector_ids)} vectors from ChromaDB")
+                except Exception as rollback_err:
+                    logger.error(f"      Rollback failed: {rollback_err}")
+                raise RuntimeError(
+                    f"BM25 index failed (ChromaDB rolled back): {bm25_err}"
+                ) from bm25_err
             logger.info(f"      Index built for {len(sparse_stats)} documents")
             
             # 6c: Register images in image storage index
@@ -494,47 +530,35 @@ class IngestionPipeline:
                 "images_indexed": len(images)
             }
             _elapsed_storage = (time.monotonic() - _t0_storage) * 1000.0
-            if trace is not None:
-                # Per-chunk storage mapping: chunk_id → vector_id
-                chunk_storage = [
-                    {
-                        "chunk_id": c.id,
-                        "vector_id": vector_ids[i] if i < len(vector_ids) else "—",
-                        "collection": self.collection,
-                        "store": "ChromaDB",
-                    }
+            self._trace_stage(trace, "upsert", {
+                "dense_store": {
+                    "backend": "ChromaDB",
+                    "collection": self.collection,
+                    "count": len(vector_ids),
+                    "path": "data/db/chroma/",
+                },
+                "sparse_store": {
+                    "backend": "BM25",
+                    "collection": self.collection,
+                    "count": len(sparse_stats),
+                    "path": f"data/db/bm25/{self.collection}/",
+                },
+                "image_store": {
+                    "backend": "ImageStorage (JSON index)",
+                    "count": len(images),
+                    "images": [
+                        {"image_id": img["id"], "file_path": str(img["path"]),
+                         "page": img.get("page", 0), "doc_hash": file_hash}
+                        for img in images
+                    ],
+                },
+                "chunk_mapping": [
+                    {"chunk_id": c.id,
+                     "vector_id": vector_ids[i] if i < len(vector_ids) else "—",
+                     "collection": self.collection, "store": "ChromaDB"}
                     for i, c in enumerate(chunks)
-                ]
-                # Image storage details
-                image_storage_details = [
-                    {
-                        "image_id": img["id"],
-                        "file_path": str(img["path"]),
-                        "page": img.get("page", 0),
-                        "doc_hash": file_hash,
-                    }
-                    for img in images
-                ]
-                trace.record_stage("upsert", {
-                    "dense_store": {
-                        "backend": "ChromaDB",
-                        "collection": self.collection,
-                        "count": len(vector_ids),
-                        "path": "data/db/chroma/",
-                    },
-                    "sparse_store": {
-                        "backend": "BM25",
-                        "collection": self.collection,
-                        "count": len(sparse_stats),
-                        "path": f"data/db/bm25/{self.collection}/",
-                    },
-                    "image_store": {
-                        "backend": "ImageStorage (JSON index)",
-                        "count": len(images),
-                        "images": image_storage_details,
-                    },
-                    "chunk_mapping": chunk_storage,
-                }, elapsed_ms=_elapsed_storage)
+                ],
+            }, elapsed_ms=_elapsed_storage)
             
             # ─────────────────────────────────────────────────────────────
             # Mark Success

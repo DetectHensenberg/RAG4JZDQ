@@ -101,7 +101,11 @@ traces.jsonl
 .github/skills/auto-coder/.spec_hash
 
 # Secrets
+.env
 .env.local
 .env.*.local
 secrets.yaml
+
+# Settings with secrets (use settings.yaml.example as template)
+config/settings.yaml
 nonexistent_traces.jsonl/
