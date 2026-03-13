@@ -53,6 +53,11 @@ def _page_evaluation_panel() -> None:
     render()
 
 
+def _page_system_config() -> None:
+    from src.observability.dashboard.pages.system_config import render
+    render()
+
+
 # ── Navigation ───────────────────────────────────────────────────────
 
 pages = {
@@ -67,6 +72,7 @@ pages = {
         st.Page(_page_ingestion_traces, title="摄取追踪", icon="🔬"),
         st.Page(_page_query_traces, title="查询追踪", icon="🔎"),
         st.Page(_page_evaluation_panel, title="评估面板", icon="📏"),
+        st.Page(_page_system_config, title="系统配置", icon="⚙️"),
     ],
 }
 
