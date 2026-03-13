@@ -52,7 +52,7 @@ def get_hybrid_search(collection: str = "default") -> Any:
     bm25 = BM25Indexer(index_dir=str(resolve_path(f"data/db/bm25/{collection}")))
     bm25.load(collection)
 
-    dense_retriever = DenseRetriever(settings=settings, embedding=embedding, vector_store=vector_store)
+    dense_retriever = DenseRetriever(settings=settings, embedding_client=embedding, vector_store=vector_store)
     sparse_retriever = SparseRetriever(settings=settings, bm25_indexer=bm25, vector_store=vector_store)
     query_processor = QueryProcessor(settings=settings)
     fusion = RRFFusion(settings=settings)
