@@ -69,8 +69,6 @@ pages = {
         st.Page(_page_overview, title="系统总览", icon="📊"),
         st.Page(_page_data_browser, title="数据浏览", icon="🔍"),
         st.Page(_page_ingestion_manager, title="摄取管理", icon="📥"),
-        st.Page(_page_ingestion_traces, title="摄取追踪", icon="🔬"),
-        st.Page(_page_query_traces, title="查询追踪", icon="🔎"),
         st.Page(_page_evaluation_panel, title="评估面板", icon="📏"),
         st.Page(_page_system_config, title="系统配置", icon="⚙️"),
     ],
