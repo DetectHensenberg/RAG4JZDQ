@@ -325,10 +325,14 @@ class IngestionPipeline:
             _notify("load", 2)
             
             _t0 = time.monotonic()
+            pdf_parser = "markitdown"
+            if self._settings.ingestion:
+                pdf_parser = getattr(self._settings.ingestion, "pdf_parser", "markitdown")
             loader = LoaderFactory.create(
                 file_path,
                 extract_images=True,
                 image_storage_dir=self._image_storage_dir,
+                pdf_parser=pdf_parser,
             )
             document = loader.load(str(file_path))
             _elapsed = (time.monotonic() - _t0) * 1000.0
@@ -531,6 +535,7 @@ class IngestionPipeline:
             }
             _elapsed_storage = (time.monotonic() - _t0_storage) * 1000.0
             self._trace_stage(trace, "upsert", {
+                "method": "chroma+bm25+image",
                 "dense_store": {
                     "backend": "ChromaDB",
                     "collection": self.collection,

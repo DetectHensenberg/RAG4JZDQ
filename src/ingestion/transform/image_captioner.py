@@ -122,6 +122,18 @@ class ImageCaptioner(BaseTransform):
             logger.debug(f"Skipping unsupported image format '{img_ext}': {img_path}")
             return None
         
+        # Check image dimensions - Vision API requires width/height > 10px
+        try:
+            from PIL import Image
+            with Image.open(img_path) as img:
+                width, height = img.size
+                if width <= 10 or height <= 10:
+                    logger.debug(f"Skipping tiny image ({width}x{height}): {img_path}")
+                    return None
+        except Exception as e:
+            logger.debug(f"Could not check image dimensions: {e}")
+            # Continue anyway, let Vision API handle it
+        
         try:
             image_input = ImageInput(path=img_path)
             response = self.llm.chat_with_image(

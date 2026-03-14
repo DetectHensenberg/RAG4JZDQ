@@ -13,6 +13,7 @@ from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
 from api.models import IngestRequest
+from api.security import validate_path
 from src.core.settings import resolve_path
 
 logger = logging.getLogger(__name__)
@@ -22,13 +23,19 @@ router = APIRouter()
 _tasks: Dict[str, Dict[str, Any]] = {}
 
 
+# Allowed file extensions for ingestion (whitelist)
+_ALLOWED_EXTENSIONS = frozenset({".pdf", ".pptx", ".docx", ".md", ".txt", ".csv", ".xlsx"})
+
+
 def _scan_files(folder: str, file_types: List[str]) -> List[Path]:
     """Recursively scan folder for matching files."""
     folder_path = Path(folder)
     if not folder_path.exists():
         return []
+    # Only allow whitelisted extensions
+    safe_types = [ft for ft in file_types if ft.lower() in _ALLOWED_EXTENSIONS]
     files = []
-    for ft in file_types:
+    for ft in safe_types:
         files.extend(folder_path.rglob(f"*{ft}"))
     return sorted(files)
 
@@ -38,9 +45,21 @@ async def scan_folder(body: Dict[str, Any]):
     """Scan a folder and return file list."""
     folder = body.get("folder_path", "")
     file_types = body.get("file_types", [".pdf", ".pptx", ".docx", ".md", ".txt"])
-    if not folder or not Path(folder).exists():
-        return {"ok": False, "message": f"文件夹不存在: {folder}"}
-    files = _scan_files(folder, file_types)
+    
+    # Basic validation — block traversal patterns but allow user folders
+    from api.security import _DANGEROUS_PATTERNS
+    if not folder or not folder.strip():
+        return {"ok": False, "message": "路径不能为空"}
+    if _DANGEROUS_PATTERNS.search(folder):
+        return {"ok": False, "message": "路径包含非法字符"}
+    
+    folder_path = Path(folder).resolve()
+    if not folder_path.exists():
+        return {"ok": False, "message": f"路径不存在: {folder}"}
+    if not folder_path.is_dir():
+        return {"ok": False, "message": "路径不是文件夹"}
+    
+    files = _scan_files(str(folder_path), file_types)
     return {
         "ok": True,
         "data": {
@@ -53,7 +72,20 @@ async def scan_folder(body: Dict[str, Any]):
 @router.post("/ingest")
 async def start_ingest(req: IngestRequest):
     """Start ingestion and return task_id for progress tracking."""
-    files = _scan_files(req.folder_path, req.file_types)
+    # Basic validation — block traversal patterns but allow user folders
+    from api.security import _DANGEROUS_PATTERNS
+    if not req.folder_path or not req.folder_path.strip():
+        return {"ok": False, "message": "路径不能为空"}
+    if _DANGEROUS_PATTERNS.search(req.folder_path):
+        return {"ok": False, "message": "路径包含非法字符"}
+    
+    folder_path = Path(req.folder_path).resolve()
+    if not folder_path.exists():
+        return {"ok": False, "message": f"路径不存在: {req.folder_path}"}
+    if not folder_path.is_dir():
+        return {"ok": False, "message": "路径不是文件夹"}
+    
+    files = _scan_files(str(folder_path), req.file_types)
     if not files:
         return {"ok": False, "message": "未找到匹配文件"}
 

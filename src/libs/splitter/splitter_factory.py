@@ -28,6 +28,12 @@ def _register_builtin_providers() -> None:
     except ImportError:
         pass  # RecursiveSplitter not available (missing langchain dependency)
 
+    try:
+        from src.libs.splitter.structure_splitter import StructureSplitter
+        SplitterFactory.register_provider("structure", StructureSplitter)
+    except ImportError:
+        pass  # StructureSplitter not available
+
 
 class SplitterFactory:
     """Factory for creating Splitter provider instances.

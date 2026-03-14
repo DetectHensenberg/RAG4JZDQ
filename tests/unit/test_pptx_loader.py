@@ -183,18 +183,24 @@ class TestPptxLoaderImageExtraction:
 class TestLoaderFactory:
     """Test that LoaderFactory creates the right loader for PPTX files."""
 
-    def test_factory_creates_pptx_loader(self):
+    def test_factory_creates_pptx_loader(self, tmp_path):
         from src.libs.loader.loader_factory import LoaderFactory
-        loader = LoaderFactory.create("test.pptx")
+        f = tmp_path / "test.pptx"
+        f.write_bytes(b"")
+        loader = LoaderFactory.create(str(f))
         assert isinstance(loader, PptxLoader)
 
-    def test_factory_creates_pptx_loader_for_ppt(self):
+    def test_factory_creates_pptx_loader_for_ppt(self, tmp_path):
         from src.libs.loader.loader_factory import LoaderFactory
-        loader = LoaderFactory.create("test.ppt")
+        f = tmp_path / "test.ppt"
+        f.write_bytes(b"")
+        loader = LoaderFactory.create(str(f))
         assert isinstance(loader, PptxLoader)
 
-    def test_factory_creates_pdf_loader_for_pdf(self):
+    def test_factory_creates_pdf_loader_for_pdf(self, tmp_path):
         from src.libs.loader.loader_factory import LoaderFactory
         from src.libs.loader.pdf_loader import PdfLoader
-        loader = LoaderFactory.create("test.pdf")
+        f = tmp_path / "test.pdf"
+        f.write_bytes(b"")
+        loader = LoaderFactory.create(str(f))
         assert isinstance(loader, PdfLoader)

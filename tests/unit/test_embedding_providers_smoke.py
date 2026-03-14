@@ -25,11 +25,15 @@ from src.libs.embedding.openai_embedding import OpenAIEmbedding, OpenAIEmbedding
 def mock_settings_openai() -> Any:
     """Create mock settings for OpenAI embedding."""
     settings = Mock()
-    settings.embedding = Mock()
+    settings.embedding = Mock(spec=[])
     settings.embedding.provider = "openai"
     settings.embedding.model = "text-embedding-3-small"
     settings.embedding.dimensions = 1536
-    settings.embedding.base_url = None  # No base_url in settings by default
+    settings.embedding.base_url = None
+    settings.embedding.api_key = None
+    settings.embedding.azure_endpoint = None
+    settings.embedding.deployment_name = None
+    settings.embedding.api_version = None
     return settings
 
 
@@ -37,13 +41,15 @@ def mock_settings_openai() -> Any:
 def mock_settings_azure() -> Any:
     """Create mock settings for Azure embedding."""
     settings = Mock()
-    settings.embedding = Mock()
+    settings.embedding = Mock(spec=[])
     settings.embedding.provider = "azure"
     settings.embedding.model = "text-embedding-ada-002"
     settings.embedding.deployment_name = "my-embedding-deployment"
     settings.embedding.azure_endpoint = "https://my-resource.openai.azure.com/"
     settings.embedding.api_version = "2024-02-01"
     settings.embedding.dimensions = None
+    settings.embedding.api_key = None
+    settings.embedding.base_url = None
     return settings
 
 
@@ -234,6 +240,8 @@ class TestAzureEmbedding:
         self, mock_settings_azure: Any, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """Test initialization with Azure environment variables."""
+        # Clear settings values so env vars take precedence
+        mock_settings_azure.embedding.azure_endpoint = None
         monkeypatch.setenv("AZURE_OPENAI_API_KEY", "azure-env-key")
         monkeypatch.setenv("AZURE_OPENAI_ENDPOINT", "https://env.openai.azure.com/")
         

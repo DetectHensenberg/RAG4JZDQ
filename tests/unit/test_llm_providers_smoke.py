@@ -214,17 +214,15 @@ class TestOpenAILLM:
         """Should return ChatResponse on successful API call."""
         settings = MockSettings()
         llm = OpenAILLM(settings, api_key="test-key")
+        # OpenAILLM uses a persistent _http_client; mock it directly
+        llm._http_client = MagicMock()
+        llm._http_client.post.return_value = make_mock_response("Test response", "gpt-4o-mini")
         
-        with patch("httpx.Client") as mock_client:
-            mock_client.return_value.__enter__.return_value.post.return_value = (
-                make_mock_response("Test response", "gpt-4o-mini")
-            )
-            
-            response = llm.chat([Message(role="user", content="Hello")])
-            
-            assert response.content == "Test response"
-            assert response.model == "gpt-4o-mini"
-            assert response.usage["total_tokens"] == 30
+        response = llm.chat([Message(role="user", content="Hello")])
+        
+        assert response.content == "Test response"
+        assert response.model == "gpt-4o-mini"
+        assert response.usage["total_tokens"] == 30
     
     def test_chat_empty_messages_error(self):
         """Should raise ValueError for empty messages list."""
@@ -246,14 +244,11 @@ class TestOpenAILLM:
         """Should raise OpenAILLMError on API error."""
         settings = MockSettings()
         llm = OpenAILLM(settings, api_key="test-key")
+        llm._http_client = MagicMock()
+        llm._http_client.post.return_value = make_error_response(400, "Bad request")
         
-        with patch("httpx.Client") as mock_client:
-            mock_client.return_value.__enter__.return_value.post.return_value = (
-                make_error_response(400, "Bad request")
-            )
-            
-            with pytest.raises(OpenAILLMError, match="API error"):
-                llm.chat([Message(role="user", content="Hello")])
+        with pytest.raises(OpenAILLMError, match="API error"):
+            llm.chat([Message(role="user", content="Hello")])
 
 
 # -----------------------------------------------------------------------------
@@ -435,19 +430,23 @@ class TestMessageValidation:
         with patch.dict("os.environ", {api_key_env: "test-key"}):
             llm = llm_class(settings)
             
-            # These should not raise validation errors
             messages = [
                 Message(role="system", content="You are helpful"),
                 Message(role="user", content="Hello"),
                 Message(role="assistant", content="Hi there"),
             ]
             
-            with patch("httpx.Client") as mock_client:
-                mock_client.return_value.__enter__.return_value.post.return_value = (
-                    make_mock_response()
-                )
-                # Should not raise
+            if hasattr(llm, "_http_client"):
+                # OpenAILLM uses persistent client
+                llm._http_client = MagicMock()
+                llm._http_client.post.return_value = make_mock_response()
                 llm.chat(messages)
+            else:
+                with patch("httpx.Client") as mock_client:
+                    mock_client.return_value.__enter__.return_value.post.return_value = (
+                        make_mock_response()
+                    )
+                    llm.chat(messages)
 
 
 # -----------------------------------------------------------------------------
@@ -464,14 +463,12 @@ class TestLLMIntegration:
         
         with patch.dict("os.environ", {"OPENAI_API_KEY": "test-key"}):
             llm = LLMFactory.create(settings)
+            # OpenAILLM uses persistent _http_client
+            llm._http_client = MagicMock()
+            llm._http_client.post.return_value = make_mock_response("Integration test response")
             
-            with patch("httpx.Client") as mock_client:
-                mock_client.return_value.__enter__.return_value.post.return_value = (
-                    make_mock_response("Integration test response")
-                )
-                
-                response = llm.chat([Message(role="user", content="Test")])
-                assert response.content == "Integration test response"
+            response = llm.chat([Message(role="user", content="Test")])
+            assert response.content == "Integration test response"
     
     def test_factory_to_chat_flow_deepseek(self):
         """Test complete flow: factory -> create -> chat for DeepSeek."""

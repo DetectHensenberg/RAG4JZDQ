@@ -18,6 +18,8 @@ from typing import Any, Dict
 
 import pytest
 
+pytest.importorskip("ragas", reason="ragas package not installed")
+
 
 class TestRagasEvaluatorInit:
     """Tests for RagasEvaluator initialisation."""

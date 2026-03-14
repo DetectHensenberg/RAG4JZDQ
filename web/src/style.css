@@ -442,3 +442,389 @@ html, body, #app {
 .page-enter {
   animation: fadeIn 0.4s var(--ease);
 }
+
+/* ═══════════════════════════════════════════════════════
+   ENHANCED ANIMATIONS & VISUAL EFFECTS
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Slide Animations ── */
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideDown {
+  from { opacity: 0; transform: translateY(-16px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes slideLeft {
+  from { opacity: 0; transform: translateX(16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes slideRight {
+  from { opacity: 0; transform: translateX(-16px); }
+  to { opacity: 1; transform: translateX(0); }
+}
+
+/* ── Pulse & Scale ── */
+@keyframes pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.02); opacity: 0.9; }
+}
+
+@keyframes scaleIn {
+  from { opacity: 0; transform: scale(0.95); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes scaleOut {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(0.95); }
+}
+
+/* ── Shimmer Effect (for loading) ── */
+@keyframes shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--c-surface) 25%,
+    var(--c-surface-hover) 50%,
+    var(--c-surface) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.5s infinite;
+}
+
+/* ── Glow Effects ── */
+@keyframes glowPulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(255,255,255,0.1); }
+  50% { box-shadow: 0 0 20px 4px rgba(255,255,255,0.15); }
+}
+
+.glow-pulse {
+  animation: glowPulse 2s ease-in-out infinite;
+}
+
+/* ── Float Animation ── */
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
+
+.float {
+  animation: float 3s ease-in-out infinite;
+}
+
+/* ═══════════════════════════════════════════════════════
+   DIALOG STYLING
+   ═══════════════════════════════════════════════════════ */
+
+.el-dialog {
+  background: var(--c-bg-elevated) !important;
+  border: 1px solid var(--c-border) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: 0 24px 48px rgba(0,0,0,0.5) !important;
+}
+
+.el-dialog__header {
+  padding: var(--sp-5) !important;
+  border-bottom: 1px solid var(--c-border) !important;
+  margin-right: 0 !important;
+}
+
+.el-dialog__title {
+  font-size: var(--fs-base) !important;
+  font-weight: 500 !important;
+  color: var(--c-text-primary) !important;
+}
+
+.el-dialog__headerbtn {
+  top: var(--sp-5) !important;
+  right: var(--sp-5) !important;
+}
+
+.el-dialog__headerbtn .el-dialog__close {
+  color: var(--c-text-tertiary) !important;
+}
+
+.el-dialog__headerbtn:hover .el-dialog__close {
+  color: var(--c-text-primary) !important;
+}
+
+.el-dialog__body {
+  padding: var(--sp-5) !important;
+  color: var(--c-text-secondary) !important;
+}
+
+.el-dialog__footer {
+  padding: var(--sp-4) var(--sp-5) !important;
+  border-top: 1px solid var(--c-border) !important;
+}
+
+/* Dialog Overlay */
+.el-overlay {
+  background-color: rgba(0, 0, 0, 0.7) !important;
+  backdrop-filter: blur(4px) !important;
+}
+
+/* ═══════════════════════════════════════════════════════
+   LOADING STATES
+   ═══════════════════════════════════════════════════════ */
+
+/* Skeleton Loading */
+.skeleton {
+  background: var(--c-surface);
+  border-radius: var(--radius-xs);
+  position: relative;
+  overflow: hidden;
+}
+
+.skeleton::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255,255,255,0.05) 50%,
+    transparent 100%
+  );
+  animation: shimmer 1.5s infinite;
+}
+
+/* Spinner */
+@keyframes spinner {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
+.spinner {
+  animation: spinner 1s linear infinite;
+}
+
+/* Loading Dots */
+@keyframes loadingDots {
+  0%, 80%, 100% { opacity: 0; }
+  40% { opacity: 1; }
+}
+
+.loading-dots span {
+  animation: loadingDots 1.4s infinite both;
+}
+
+.loading-dots span:nth-child(1) { animation-delay: -0.32s; }
+.loading-dots span:nth-child(2) { animation-delay: -0.16s; }
+.loading-dots span:nth-child(3) { animation-delay: 0s; }
+
+/* ═══════════════════════════════════════════════════════
+   MICRO-INTERACTIONS
+   ═══════════════════════════════════════════════════════ */
+
+/* Hover Lift */
+.hover-lift {
+  transition: transform var(--duration) var(--ease), box-shadow var(--duration) var(--ease);
+}
+
+.hover-lift:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-hover);
+}
+
+/* Click Press */
+.click-press:active {
+  transform: scale(0.98);
+}
+
+/* Focus Ring */
+.focus-ring:focus {
+  outline: none;
+  box-shadow: 0 0 0 2px var(--c-bg), 0 0 0 4px rgba(255,255,255,0.3);
+}
+
+/* Ripple Effect */
+.ripple {
+  position: relative;
+  overflow: hidden;
+}
+
+.ripple::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 0;
+  height: 0;
+  background: rgba(255,255,255,0.2);
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  transition: width 0.6s, height 0.6s;
+}
+
+.ripple:active::after {
+  width: 200%;
+  height: 200%;
+}
+
+/* ═══════════════════════════════════════════════════════
+   ADDITIONAL ELEMENT PLUS OVERRIDES
+   ═══════════════════════════════════════════════════════ */
+
+/* Dropdown Menu */
+.el-dropdown-menu {
+  background: var(--c-bg-elevated) !important;
+  border: 1px solid var(--c-border) !important;
+  border-radius: var(--radius-sm) !important;
+  padding: var(--sp-1) !important;
+}
+
+.el-dropdown-menu__item {
+  color: var(--c-text-secondary) !important;
+  border-radius: var(--radius-xs) !important;
+  margin: 2px 0 !important;
+  padding: var(--sp-2) var(--sp-3) !important;
+}
+
+.el-dropdown-menu__item:hover {
+  background: var(--c-surface-hover) !important;
+  color: var(--c-text-primary) !important;
+}
+
+/* Menu */
+.el-menu {
+  background: transparent !important;
+  border: none !important;
+}
+
+.el-menu-item {
+  color: var(--c-text-secondary) !important;
+  border-radius: var(--radius-sm) !important;
+  margin: 2px var(--sp-2) !important;
+}
+
+.el-menu-item:hover {
+  background: var(--c-surface-hover) !important;
+  color: var(--c-text-primary) !important;
+}
+
+.el-menu-item.is-active {
+  background: var(--c-accent-muted) !important;
+  color: var(--c-text-primary) !important;
+}
+
+/* Tooltip */
+.el-tooltip__popper {
+  background: var(--c-bg-elevated) !important;
+  border: 1px solid var(--c-border) !important;
+  color: var(--c-text-secondary) !important;
+  border-radius: var(--radius-xs) !important;
+}
+
+/* Tabs */
+.el-tabs__item {
+  color: var(--c-text-tertiary) !important;
+}
+
+.el-tabs__item:hover {
+  color: var(--c-text-secondary) !important;
+}
+
+.el-tabs__item.is-active {
+  color: var(--c-text-primary) !important;
+}
+
+.el-tabs__active-bar {
+  background: var(--c-accent) !important;
+}
+
+/* Empty */
+.el-empty__description {
+  color: var(--c-text-tertiary) !important;
+}
+
+/* Badge */
+.el-badge__content {
+  background: var(--c-accent) !important;
+  color: #0a0a0a !important;
+  border-radius: var(--radius-full) !important;
+  font-weight: 500 !important;
+}
+
+/* Avatar */
+.el-avatar {
+  background: var(--c-surface) !important;
+  color: var(--c-text-secondary) !important;
+}
+
+/* Divider */
+.el-divider {
+  border-color: var(--c-border) !important;
+}
+
+/* Timeline */
+.el-timeline-item__node {
+  background: var(--c-border) !important;
+}
+
+.el-timeline-item__content {
+  color: var(--c-text-secondary) !important;
+}
+
+/* Result */
+.el-result__title {
+  color: var(--c-text-primary) !important;
+}
+
+.el-result__subtitle {
+  color: var(--c-text-tertiary) !important;
+}
+
+/* ═══════════════════════════════════════════════════════
+   UTILITY CLASSES
+   ═══════════════════════════════════════════════════════ */
+
+/* Text Colors */
+.text-primary { color: var(--c-text-primary) !important; }
+.text-secondary { color: var(--c-text-secondary) !important; }
+.text-tertiary { color: var(--c-text-tertiary) !important; }
+.text-success { color: var(--c-success) !important; }
+.text-danger { color: var(--c-danger) !important; }
+.text-warning { color: var(--c-warning) !important; }
+
+/* Background */
+.bg-surface { background: var(--c-surface) !important; }
+.bg-glass { background: var(--glass-bg) !important; }
+.bg-elevated { background: var(--c-bg-elevated) !important; }
+
+/* Border */
+.border { border: 1px solid var(--c-border) !important; }
+.border-hover { border-color: var(--c-border-hover) !important; }
+
+/* Rounded */
+.rounded { border-radius: var(--radius) !important; }
+.rounded-sm { border-radius: var(--radius-sm) !important; }
+.rounded-xs { border-radius: var(--radius-xs) !important; }
+.rounded-full { border-radius: var(--radius-full) !important; }
+
+/* Shadow */
+.shadow { box-shadow: var(--shadow-default) !important; }
+.shadow-hover { box-shadow: var(--shadow-hover) !important; }
+.glow { box-shadow: var(--glow-subtle) !important; }
+.glow-hover { box-shadow: var(--glow-hover) !important; }
+
+/* Animation Classes */
+.animate-slide-up { animation: slideUp 0.4s var(--ease); }
+.animate-slide-down { animation: slideDown 0.4s var(--ease); }
+.animate-slide-left { animation: slideLeft 0.4s var(--ease); }
+.animate-slide-right { animation: slideRight 0.4s var(--ease); }
+.animate-scale-in { animation: scaleIn 0.3s var(--ease); }
+.animate-pulse { animation: pulse 2s ease-in-out infinite; }
+.animate-float { animation: float 3s ease-in-out infinite; }

@@ -20,9 +20,9 @@ def traces_file(tmp_path: Path) -> Path:
             "started_at": "2025-01-01T00:00:00",
             "elapsed_ms": 100.0,
             "stages": [
-                {"stage": "load", "elapsed_ms": 20.0, "method": "pdf"},
-                {"stage": "split", "elapsed_ms": 30.0},
-                {"stage": "embed", "elapsed_ms": 50.0},
+                {"stage": "load", "elapsed_ms": 20.0, "data": {"method": "pdf"}},
+                {"stage": "split", "elapsed_ms": 30.0, "data": {}},
+                {"stage": "embed", "elapsed_ms": 50.0, "data": {}},
             ],
             "metadata": {"source": "a.pdf"},
         },

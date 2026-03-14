@@ -17,6 +17,7 @@ import pytest
 
 from src.core.trace.trace_context import TraceContext
 from src.core.types import Document, Chunk
+from src.ingestion.pipeline import IngestionPipeline
 
 
 # ── Fake heavy components ────────────────────────────────────────────
@@ -46,51 +47,51 @@ class FakeBatchResult:
     sparse_stats: List[Dict[str, Any]] = field(default_factory=lambda: [{"doc_id": f"chunk_{i}"} for i in range(3)])
 
 
-class FakePipeline:
-    """Mimics IngestionPipeline but with all heavy components replaced."""
+def _make_fake_pipeline() -> IngestionPipeline:
+    """Create an IngestionPipeline instance without real __init__, all components mocked."""
+    fp = object.__new__(IngestionPipeline)
+    fp.collection = "test_collection"
+    fp.force = False
+    fp._image_storage_dir = "data/images/test_collection"
 
-    def __init__(self):
-        self.collection = "test_collection"
-        self.force = False
+    # Mock each component
+    fp.integrity_checker = MagicMock()
+    fp.integrity_checker.compute_sha256.return_value = "abc123"
+    fp.integrity_checker.should_skip.return_value = False
 
-        # Mock each component
-        self.integrity_checker = MagicMock()
-        self.integrity_checker.compute_sha256.return_value = "abc123"
-        self.integrity_checker.should_skip.return_value = False
+    fp._mock_loader = MagicMock()
+    fp._mock_loader.load.return_value = _fake_document()
 
-        self.loader = MagicMock()
-        self.loader.load.return_value = _fake_document()
+    chunks = _fake_chunks()
+    fp.chunker = MagicMock()
+    fp.chunker.split_document.return_value = chunks
 
-        self.chunker = MagicMock()
-        chunks = _fake_chunks()
-        self.chunker.split_document.return_value = chunks
+    fp.chunk_refiner = MagicMock()
+    fp.chunk_refiner.transform.return_value = chunks
 
-        self.chunk_refiner = MagicMock()
-        self.chunk_refiner.transform.return_value = chunks
+    fp.metadata_enricher = MagicMock()
+    fp.metadata_enricher.transform.return_value = chunks
 
-        self.metadata_enricher = MagicMock()
-        self.metadata_enricher.transform.return_value = chunks
+    fp.image_captioner = MagicMock()
+    fp.image_captioner.transform.return_value = chunks
 
-        self.image_captioner = MagicMock()
-        self.image_captioner.transform.return_value = chunks
+    fp.batch_processor = MagicMock()
+    fp.batch_processor.process.return_value = FakeBatchResult()
 
-        self.batch_processor = MagicMock()
-        self.batch_processor.process.return_value = FakeBatchResult()
+    fp.vector_upserter = MagicMock()
+    fp.vector_upserter.upsert.return_value = ["vid_0", "vid_1", "vid_2"]
 
-        self.vector_upserter = MagicMock()
-        self.vector_upserter.upsert.return_value = ["vid_0", "vid_1", "vid_2"]
-
-        self.bm25_indexer = MagicMock()
-        self.image_storage = MagicMock()
+    fp.bm25_indexer = MagicMock()
+    fp.image_storage = MagicMock()
+    return fp
 
 
 def _run_fake_pipeline(trace: Optional[TraceContext] = None):
-    """Import the real run() logic but wire it to FakePipeline."""
-    from src.ingestion.pipeline import IngestionPipeline
-
-    fp = FakePipeline()
-    # Borrow the real `run` method but bind it to our fake instance
-    return IngestionPipeline.run(fp, "test.pdf", trace=trace)
+    """Run the real pipeline logic with all heavy components mocked."""
+    fp = _make_fake_pipeline()
+    with patch("src.ingestion.pipeline.LoaderFactory") as mock_lf:
+        mock_lf.create.return_value = fp._mock_loader
+        return fp.run("test.pdf", trace=trace)
 
 
 # ── Tests ────────────────────────────────────────────────────────────

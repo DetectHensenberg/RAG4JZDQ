@@ -10,6 +10,7 @@ from typing import Any, Dict
 import yaml
 from fastapi import APIRouter
 
+from api.crypto import decrypt, encrypt
 from src.core.settings import REPO_ROOT, resolve_path
 
 logger = logging.getLogger(__name__)
@@ -39,26 +40,36 @@ def _load_env_key() -> str:
             if line and not line.startswith("#") and "=" in line:
                 key, _, value = line.partition("=")
                 if key.strip() == "DASHSCOPE_API_KEY":
-                    return value.strip()
+                    raw = value.strip()
+                    # Try to decrypt (encrypted tokens are longer and URL-safe-b64)
+                    if raw.startswith("enc:"):
+                        try:
+                            return decrypt(raw[4:])
+                        except ValueError:
+                            logger.warning("Failed to decrypt API key, returning raw")
+                            return raw
+                    return raw
     return ""
 
 
 def _save_env_key(api_key: str) -> None:
+    encrypted_value = f"enc:{encrypt(api_key)}"
     lines = []
     found = False
     if _ENV_PATH.exists():
         for line in _ENV_PATH.read_text(encoding="utf-8").splitlines():
             stripped = line.strip()
             if stripped and not stripped.startswith("#") and stripped.startswith("DASHSCOPE_API_KEY"):
-                lines.append(f"DASHSCOPE_API_KEY={api_key}")
+                lines.append(f"DASHSCOPE_API_KEY={encrypted_value}")
                 found = True
             else:
                 lines.append(line)
     if not found:
         if not lines or lines[-1].strip():
             lines.append("")
-        lines.append(f"DASHSCOPE_API_KEY={api_key}")
+        lines.append(f"DASHSCOPE_API_KEY={encrypted_value}")
     _ENV_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    # Set the decrypted value in environment for runtime use
     os.environ["DASHSCOPE_API_KEY"] = api_key
 
 

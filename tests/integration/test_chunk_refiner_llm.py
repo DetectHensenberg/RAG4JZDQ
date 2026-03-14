@@ -164,8 +164,14 @@ def is_provider_available(provider: str) -> tuple[bool, str]:
         return os.getenv(env_var) is not None, env_var
         
     elif provider == 'ollama':
-        # Ollama assumed available if base_url is set or default
-        return True, 'OLLAMA_BASE_URL'
+        # Check if Ollama is actually reachable
+        base_url = os.getenv('OLLAMA_BASE_URL', 'http://localhost:11434')
+        try:
+            import urllib.request
+            urllib.request.urlopen(base_url, timeout=2)
+            return True, 'OLLAMA_BASE_URL'
+        except Exception:
+            return False, 'OLLAMA_BASE_URL'
         
     return False, ''
 

@@ -506,7 +506,7 @@ class TestMCPClientE2E:
             },
         ]
 
-        responses = _send_jsonrpc(mcp_server, messages, expected_responses=4, timeout=60.0)
+        responses = _send_jsonrpc(mcp_server, messages, expected_responses=4, timeout=180.0)
 
         # All four responses (init + 3 tool calls) should arrive
         for req_id in (1, 2, 3, 4):

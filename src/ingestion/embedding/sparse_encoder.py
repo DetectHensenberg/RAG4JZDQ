@@ -147,7 +147,7 @@ class SparseEncoder:
         tokens: List[str] = []
 
         # Use jieba to segment the text (handles both Chinese and English)
-        raw_tokens = jieba.lcut(text)
+        raw_tokens = list(jieba.cut(text))
 
         # Clean tokens: keep only alphanumeric and Chinese characters
         for token in raw_tokens:

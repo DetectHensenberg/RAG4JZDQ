@@ -54,8 +54,8 @@ def get_hybrid_search(collection: str = "default") -> Any:
 
     dense_retriever = DenseRetriever(settings=settings, embedding_client=embedding, vector_store=vector_store)
     sparse_retriever = SparseRetriever(settings=settings, bm25_indexer=bm25, vector_store=vector_store)
-    query_processor = QueryProcessor(settings=settings)
-    fusion = RRFFusion(settings=settings)
+    query_processor = QueryProcessor()
+    fusion = RRFFusion()
 
     _hybrid_search = HybridSearch(
         settings=settings,
@@ -99,3 +99,23 @@ def reset_all() -> None:
     _llm = None
     get_settings.cache_clear()
     logger.info("All cached instances cleared")
+
+
+def shutdown_stores() -> None:
+    """Gracefully close all vector stores to prevent HNSW index corruption.
+    
+    Called on FastAPI shutdown event. Ensures ChromaDB WAL is checkpointed
+    and HNSW index is flushed before process exits.
+    """
+    global _hybrid_search
+    if _hybrid_search is not None:
+        try:
+            dense = getattr(_hybrid_search, "dense_retriever", None)
+            if dense:
+                vs = getattr(dense, "vector_store", None)
+                if vs and hasattr(vs, "close"):
+                    vs.close()
+                    logger.info("Vector store closed gracefully")
+        except Exception as e:
+            logger.warning(f"Error closing vector store: {e}")
+    reset_all()

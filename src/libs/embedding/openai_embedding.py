@@ -189,6 +189,10 @@ class OpenAIEmbedding(BaseEmbedding):
             raise OpenAIEmbeddingError(
                 f"[Embedding:{self.model}] Parameter error: {type(e).__name__}: {e}"
             ) from e
+        except Exception as e:
+            raise OpenAIEmbeddingError(
+                f"[Embedding:{self.model}] OpenAI Embeddings API call failed: {type(e).__name__}: {e}"
+            ) from e
         
         # Extract embeddings from response
         # Response format: response.data is a list of objects with .embedding attribute

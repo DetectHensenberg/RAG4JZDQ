@@ -227,7 +227,7 @@ class ImageStorage:
         finally:
             conn.close()
         
-        return stored_path
+        return str(image_path)
     
     def register_image(
         self,
@@ -473,6 +473,8 @@ class ImageStorage:
         for img in images:
             try:
                 file_path = Path(img["file_path"])
+                if not file_path.is_absolute():
+                    file_path = self.images_root / file_path
                 if file_path.exists():
                     total_size += file_path.stat().st_size
             except Exception:

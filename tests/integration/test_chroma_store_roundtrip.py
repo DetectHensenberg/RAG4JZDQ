@@ -5,6 +5,9 @@ real upsert→query roundtrip cycles, ensuring data persistence and retrieval
 correctness.
 """
 
+import gc
+import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Dict, List
@@ -18,8 +21,11 @@ from src.libs.vector_store.chroma_store import ChromaStore
 @pytest.fixture
 def temp_chroma_dir():
     """Create a temporary directory for ChromaDB storage."""
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield tmpdir
+    tmpdir = tempfile.mkdtemp()
+    yield tmpdir
+    # On Windows, ChromaDB holds file locks; force GC then retry cleanup
+    gc.collect()
+    shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 @pytest.fixture
@@ -42,11 +48,15 @@ def chroma_store(test_settings):
     """Create a ChromaStore instance for testing."""
     store = ChromaStore(settings=test_settings)
     yield store
-    # Cleanup: clear collection after each test
+    # Cleanup: clear collection and release resources
     try:
         store.clear()
     except Exception:
         pass
+    # Release ChromaDB client to free file handles on Windows
+    if hasattr(store, '_client'):
+        del store._client
+    gc.collect()
 
 
 class TestChromaStoreBasicOperations:

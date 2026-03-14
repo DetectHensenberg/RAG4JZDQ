@@ -16,14 +16,26 @@
         <div v-for="(msg, i) in messages" :key="i" class="message" :class="msg.role">
           <div class="message-bubble">
             <div v-if="msg.role === 'user'" class="message-text">{{ msg.content }}</div>
-            <div v-else v-html="renderMd(msg.content)" class="message-content" />
+            <template v-else>
+              <div v-html="renderMd(msg.content)" class="message-content" @click="handleContentClick" />
+              <div class="message-actions">
+                <button class="action-btn" @click="saveAsMarkdown(msg.content, i)">
+                  <el-icon :size="16"><Download /></el-icon>
+                  <span>保存</span>
+                </button>
+                <button class="action-btn" @click="copyContent(msg.content)">
+                  <el-icon :size="16"><CopyDocument /></el-icon>
+                  <span>复制</span>
+                </button>
+              </div>
+            </template>
           </div>
         </div>
 
         <!-- Streaming -->
         <div v-if="streaming" class="message assistant">
           <div class="message-bubble">
-            <div v-html="renderMd(streamBuffer)" class="message-content" />
+            <div v-html="renderMd(streamBuffer)" class="message-content" @click="handleContentClick" />
             <span class="cursor-blink" />
           </div>
         </div>
@@ -37,6 +49,31 @@
             <div v-for="(ref, i) in references" :key="i" class="ref-item">
               <span class="ref-source">{{ ref.source?.split(/[/\\]/).pop() }}</span>
               <span class="ref-score">{{ ref.score }}</span>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <!-- Related Images -->
+      <div v-if="images.length" class="related-images">
+        <details open>
+          <summary class="img-toggle">{{ images.length }} 张相关图片</summary>
+          <div class="img-grid">
+            <div v-for="(img, i) in images" :key="i" class="img-item">
+              <div class="img-score-bar" :style="{ width: (img.relevance * 100) + '%' }"></div>
+              <img 
+                :src="`/api/data/images/${img.image_id}/raw`" 
+                :alt="img.caption || img.image_id"
+                class="img-thumb"
+                @click="openImage(img)"
+              />
+              <div v-if="img.caption" class="img-caption">{{ img.caption }}</div>
+              <div class="img-meta">
+                <span class="img-source">{{ img.source?.split(/[/\\]/).pop() }}</span>
+                <span class="img-relevance" :class="getRelevanceClass(img.relevance)">
+                  {{ (img.relevance * 100).toFixed(0) }}% 相关
+                </span>
+              </div>
             </div>
           </div>
         </details>
@@ -83,6 +120,14 @@
       </div>
     </div>
 
+    <!-- Image Lightbox -->
+    <Teleport to="body">
+      <div v-if="lightboxSrc" class="lightbox-overlay" @click="lightboxSrc = ''">
+        <img :src="lightboxSrc" class="lightbox-img" @click.stop />
+        <button class="lightbox-close" @click="lightboxSrc = ''">&times;</button>
+      </div>
+    </Teleport>
+
     <!-- Settings -->
     <el-drawer v-model="showSettings" title="问答设置" size="320px" direction="rtl">
       <el-form label-position="top" class="settings-form">
@@ -101,11 +146,12 @@
 </template>
 
 <script setup lang="ts">
-import { ref, nextTick, onMounted } from 'vue'
+import { ref, nextTick, onMounted, watch } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ChatDotRound, Promotion, VideoPause } from '@element-plus/icons-vue'
+import { ChatDotRound, Promotion, VideoPause, Download, CopyDocument } from '@element-plus/icons-vue'
 import { useSSE } from '@/composables/useSSE'
-import { renderMarkdown } from '@/utils/markdown'
+import { renderMarkdown, renderMermaidInContainer } from '@/utils/markdown'
+import { saveAs } from 'file-saver'
 import api from '@/composables/useApi'
 
 interface ChatMessage {
@@ -118,6 +164,7 @@ const question = ref('')
 const streaming = ref(false)
 const streamBuffer = ref('')
 const references = ref<any[]>([])
+const images = ref<any[]>([])
 const messagesRef = ref<HTMLElement | null>(null)
 const showSettings = ref(false)
 
@@ -126,9 +173,32 @@ const topK = ref(5)
 const maxTokens = ref(4096)
 
 const { stream, abort } = useSSE()
+const lightboxSrc = ref('')
 
 function renderMd(text: string): string {
   return renderMarkdown(text || '')
+}
+
+async function triggerMermaid() {
+  await nextTick()
+  if (messagesRef.value) {
+    await renderMermaidInContainer(messagesRef.value)
+  }
+}
+
+function saveAsMarkdown(content: string, idx: number) {
+  const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' })
+  const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+  saveAs(blob, `回答-${idx + 1}-${ts}.md`)
+  ElMessage.success('已保存为 Markdown 文件')
+}
+
+function copyContent(content: string) {
+  navigator.clipboard.writeText(content).then(() => {
+    ElMessage.success('已复制到剪贴板')
+  }).catch(() => {
+    ElMessage.error('复制失败')
+  })
 }
 
 function scrollToBottom() {
@@ -159,11 +229,14 @@ async function sendQuestion() {
         scrollToBottom()
       } else if (event.type === 'references') {
         references.value = event.data || []
+      } else if (event.type === 'images') {
+        images.value = event.data || []
       } else if (event.type === 'done') {
         messages.value.push({ role: 'assistant', content: event.answer || streamBuffer.value })
         streamBuffer.value = ''
         streaming.value = false
         scrollToBottom()
+        triggerMermaid()
       } else if (event.type === 'error') {
         ElMessage.error(event.message || '生成失败')
         streaming.value = false
@@ -197,10 +270,28 @@ async function clearHistory() {
     await api.delete('/chat/history')
     messages.value = []
     references.value = []
+    images.value = []
     ElMessage.success('已清空')
   } catch {
     ElMessage.error('清空失败')
   }
+}
+
+function openImage(img: any) {
+  lightboxSrc.value = `/api/data/images/${img.image_id}/raw`
+}
+
+function handleContentClick(e: MouseEvent) {
+  const target = e.target as HTMLElement
+  if (target.tagName === 'IMG') {
+    lightboxSrc.value = (target as HTMLImageElement).src
+  }
+}
+
+function getRelevanceClass(relevance: number): string {
+  if (relevance >= 0.7) return 'high'
+  if (relevance >= 0.4) return 'medium'
+  return 'low'
 }
 
 async function loadHistory() {
@@ -218,7 +309,12 @@ async function loadHistory() {
   }
 }
 
-onMounted(loadHistory)
+onMounted(async () => {
+  await loadHistory()
+  triggerMermaid()
+})
+
+watch(() => messages.value.length, () => triggerMermaid())
 </script>
 
 <style scoped>
@@ -235,7 +331,7 @@ onMounted(loadHistory)
   padding: var(--sp-8) var(--page-padding);
 }
 .messages-list {
-  max-width: 720px;
+  max-width: 794px;
   margin: 0 auto;
 }
 
@@ -282,27 +378,27 @@ onMounted(loadHistory)
   border: 1px solid rgba(255,255,255,0.12);
   color: var(--c-text-primary);
   border-radius: var(--radius) var(--radius) var(--sp-1) var(--radius);
-  max-width: 520px;
+  max-width: 600px;
 }
 .message.assistant .message-bubble {
   background: var(--glass-bg);
   border: 1px solid var(--c-border);
   border-radius: var(--radius) var(--radius) var(--radius) var(--sp-1);
-  max-width: 640px;
+  width: 100%;
   backdrop-filter: blur(var(--glass-blur));
   -webkit-backdrop-filter: blur(var(--glass-blur));
 }
-.message-bubble { padding: var(--sp-3) var(--sp-4); }
+.message-bubble { padding: var(--sp-4) var(--sp-5); }
 .message-text {
   font-size: var(--fs-sm);
   line-height: var(--lh-normal);
   white-space: pre-wrap;
 }
 .message-content {
-  font-size: var(--fs-sm);
-  line-height: 1.7;
+  font-size: 16px;
+  line-height: 1.8;
 }
-.message-content :deep(p) { margin: 0 0 var(--sp-2); }
+.message-content :deep(p) { margin: 0 0 var(--sp-3); text-indent: 2em; }
 .message-content :deep(p:last-child) { margin: 0; }
 .message-content :deep(pre) {
   background: rgba(255,255,255,0.04);
@@ -310,8 +406,8 @@ onMounted(loadHistory)
   padding: var(--sp-3) var(--sp-4);
   border-radius: var(--radius-sm);
   overflow-x: auto;
-  font-size: var(--fs-xs);
-  margin: var(--sp-2) 0;
+  font-size: var(--fs-sm);
+  margin: var(--sp-3) 0;
 }
 .message-content :deep(code) {
   background: rgba(255,255,255,0.06);
@@ -322,19 +418,32 @@ onMounted(loadHistory)
 .message-content :deep(pre code) { background: none; padding: 0; }
 .message-content :deep(table) {
   border-collapse: collapse;
-  width: 100%;
-  margin: var(--sp-2) 0;
-  font-size: var(--fs-xs);
+  width: auto;
+  max-width: 100%;
+  margin: var(--sp-3) 0;
+  font-size: 15px;
+  display: block;
+  overflow-x: auto;
+  white-space: nowrap;
 }
 .message-content :deep(th),
 .message-content :deep(td) {
   border: 1px solid var(--c-border);
-  padding: var(--sp-2) var(--sp-3);
+  padding: var(--sp-2) var(--sp-4);
+  text-indent: 0;
+  white-space: normal;
+  min-width: 80px;
 }
 .message-content :deep(th) {
-  background: rgba(255,255,255,0.04);
-  font-weight: 500;
+  background: rgba(255,255,255,0.06);
+  font-weight: 600;
+  white-space: nowrap;
 }
+.message-content :deep(td) {
+  vertical-align: top;
+}
+.message-content :deep(blockquote) { text-indent: 0; margin: var(--sp-3) 0; padding-left: 1em; border-left: 3px solid var(--c-border-hover); }
+.message-content :deep(blockquote p) { text-indent: 0; }
 .message-content :deep(h1),
 .message-content :deep(h2),
 .message-content :deep(h3) {
@@ -342,13 +451,74 @@ onMounted(loadHistory)
   font-weight: 600;
   line-height: var(--lh-tight);
 }
-.message-content :deep(h1) { font-size: var(--fs-lg); }
-.message-content :deep(h2) { font-size: var(--fs-base); }
-.message-content :deep(h3) { font-size: var(--fs-sm); }
+.message-content :deep(h1) { font-size: var(--fs-xl); text-indent: 0; }
+.message-content :deep(h2) { font-size: var(--fs-lg); text-indent: 0; }
+.message-content :deep(h3) { font-size: 17px; text-indent: 0; }
 .message-content :deep(ul),
 .message-content :deep(ol) {
-  padding-left: var(--sp-5);
-  margin: var(--sp-1) 0;
+  padding-left: 2em;
+  margin: var(--sp-2) 0;
+  text-indent: 0;
+}
+.message-content :deep(li) {
+  text-indent: 0;
+  margin-bottom: var(--sp-1);
+}
+
+/* Message actions */
+.message-actions {
+  display: flex;
+  gap: var(--sp-2);
+  justify-content: flex-end;
+  padding-top: var(--sp-3);
+  margin-top: var(--sp-3);
+}
+.action-btn {
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  color: var(--c-text-secondary);
+  cursor: pointer;
+  padding: var(--sp-2) var(--sp-3);
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  font-size: var(--fs-xs);
+  transition: all 0.2s;
+}
+.action-btn:hover {
+  color: var(--c-text-primary);
+  background: rgba(255,255,255,0.1);
+  border-color: rgba(255,255,255,0.2);
+}
+
+/* PlantUML / Diagrams */
+.message-content :deep(.plantuml-block),
+.message-content :deep(.mermaid-block) {
+  margin: var(--sp-3) 0;
+  padding: var(--sp-4);
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  text-align: center;
+}
+.message-content :deep(.plantuml-block svg),
+.message-content :deep(.mermaid-block svg) {
+  max-width: 100%;
+  height: auto;
+}
+.message-content :deep(.plantuml-loading),
+.message-content :deep(.mermaid-loading) {
+  color: var(--c-text-tertiary);
+  font-size: var(--fs-xs);
+  padding: var(--sp-4);
+}
+.message-content :deep(.plantuml-error),
+.message-content :deep(.mermaid-error) {
+  background: rgba(255,100,100,0.06);
+  border: 1px solid rgba(255,100,100,0.15);
+  color: var(--c-text-secondary);
 }
 
 .cursor-blink {
@@ -364,7 +534,7 @@ onMounted(loadHistory)
 
 /* References */
 .references {
-  max-width: 720px;
+  max-width: 794px;
   margin: var(--sp-2) auto 0;
 }
 .ref-toggle {
@@ -396,7 +566,7 @@ onMounted(loadHistory)
   padding: var(--sp-4) var(--page-padding);
 }
 .input-container {
-  max-width: 720px;
+  max-width: 794px;
   margin: 0 auto;
   display: flex;
   gap: var(--sp-3);
@@ -405,7 +575,7 @@ onMounted(loadHistory)
 .chat-input { flex: 1; }
 .input-actions { flex-shrink: 0; padding-bottom: 2px; }
 .input-meta {
-  max-width: 720px;
+  max-width: 794px;
   margin: var(--sp-2) auto 0;
   display: flex;
   justify-content: space-between;
@@ -425,4 +595,170 @@ onMounted(loadHistory)
 }
 .meta-btn:hover { color: var(--c-text-primary); }
 .meta-btn.danger:hover { color: var(--c-danger); }
+
+/* Related Images */
+.related-images {
+  max-width: 794px;
+  margin: var(--sp-3) auto 0;
+}
+.img-toggle {
+  font-size: var(--fs-xs);
+  color: var(--c-text-tertiary);
+  cursor: pointer;
+  padding: var(--sp-2) 0;
+  user-select: none;
+}
+.img-toggle:hover { color: var(--c-text-secondary); }
+.img-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--sp-3);
+  padding: var(--sp-3) 0;
+}
+.img-item {
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+  transition: transform 0.2s, border-color 0.2s;
+  position: relative;
+}
+.img-item:hover {
+  transform: translateY(-2px);
+  border-color: var(--c-border-hover);
+}
+.img-score-bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 3px;
+  background: linear-gradient(90deg, var(--c-accent), var(--c-success));
+  opacity: 0.8;
+}
+.img-thumb {
+  width: 100%;
+  height: 140px;
+  object-fit: cover;
+  cursor: pointer;
+  transition: opacity 0.2s;
+}
+.img-thumb:hover { opacity: 0.85; }
+.img-caption {
+  padding: var(--sp-2) var(--sp-3);
+  font-size: var(--fs-xs);
+  color: var(--c-text-secondary);
+  line-height: var(--lh-tight);
+  border-top: 1px solid var(--c-border-subtle);
+}
+.img-meta {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--sp-2) var(--sp-3);
+  font-size: 11px;
+  background: rgba(255,255,255,0.02);
+}
+.img-source {
+  color: var(--c-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  margin-right: var(--sp-2);
+}
+.img-relevance {
+  font-weight: 500;
+  flex-shrink: 0;
+}
+.img-relevance.high { color: #4ade80; }
+.img-relevance.medium { color: #fbbf24; }
+.img-relevance.low { color: var(--c-text-tertiary); }
+
+/* Image in markdown content - clickable */
+.message-content :deep(img) {
+  cursor: zoom-in;
+  max-width: 100%;
+  border-radius: var(--radius-sm);
+  transition: opacity 0.2s;
+}
+.message-content :deep(img:hover) {
+  opacity: 0.85;
+}
+.message-content :deep(img.inline-ref-img) {
+  display: block;
+  max-width: 480px;
+  margin: var(--sp-3) auto;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+/* Mermaid block styling */
+.message-content :deep(.mermaid-block) {
+  margin: var(--sp-3) 0;
+  padding: var(--sp-4);
+  background: rgba(255,255,255,0.02);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  overflow-x: auto;
+  text-align: center;
+}
+.message-content :deep(.mermaid-block svg) {
+  max-width: 100%;
+  height: auto;
+}
+.message-content :deep(.mermaid-loading) {
+  color: var(--c-text-tertiary);
+  font-size: var(--fs-xs);
+  padding: var(--sp-4);
+}
+</style>
+
+<style>
+/* Lightbox - global scope (Teleport to body) */
+.lightbox-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(8px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: zoom-out;
+  animation: lightbox-in 0.2s ease;
+}
+@keyframes lightbox-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.lightbox-img {
+  max-width: 90vw;
+  max-height: 90vh;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+.lightbox-close {
+  position: absolute;
+  top: 16px;
+  right: 24px;
+  background: rgba(255, 255, 255, 0.1);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  color: #fff;
+  font-size: 28px;
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  line-height: 1;
+}
+.lightbox-close:hover {
+  background: rgba(255, 255, 255, 0.2);
+  transform: scale(1.1);
+}
 </style>

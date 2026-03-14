@@ -14,10 +14,15 @@ export function useSSE() {
     controller = new AbortController()
 
     try {
+      // Use POST if body has content, otherwise GET
+      const hasBody = body && Object.keys(body).length > 0
       const resp = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        method: hasBody ? 'POST' : 'GET',
+        headers: {
+          'Accept': 'text/event-stream',
+          ...(hasBody ? { 'Content-Type': 'application/json' } : {}),
+        },
+        body: hasBody ? JSON.stringify(body) : undefined,
         signal: controller.signal,
       })
 

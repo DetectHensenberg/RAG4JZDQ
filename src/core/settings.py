@@ -174,6 +174,7 @@ class IngestionSettings:
     chunk_overlap: int
     splitter: str
     batch_size: int
+    pdf_parser: str = "markitdown"  # Options: markitdown, layout
     chunk_refiner: Optional[Dict[str, Any]] = None  # 动态配置
     metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
 
@@ -211,6 +212,7 @@ class Settings:
                 chunk_overlap=_require_int(ingestion, "chunk_overlap", "ingestion"),
                 splitter=_require_str(ingestion, "splitter", "ingestion"),
                 batch_size=_require_int(ingestion, "batch_size", "ingestion"),
+                pdf_parser=ingestion.get("pdf_parser", "markitdown"),
                 chunk_refiner=ingestion.get("chunk_refiner"),  # 可选配置
                 metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
             )

@@ -116,6 +116,7 @@ class ChunkRefiner(BaseTransform):
             rule_refined_text = self._rule_based_refine(chunk.text)
             
             # Step 2: LLM enhancement
+            extra_meta: dict = {}
             if self.use_llm and self.llm:
                 llm_refined_text = self._llm_refine(rule_refined_text, trace)
                 
@@ -125,6 +126,7 @@ class ChunkRefiner(BaseTransform):
                 else:
                     refined_text = rule_refined_text
                     refined_by = "rule"
+                    extra_meta = {'refine_fallback_reason': 'llm_failed'}
             else:
                 refined_text = rule_refined_text
                 refined_by = "rule"
@@ -134,7 +136,8 @@ class ChunkRefiner(BaseTransform):
                 text=refined_text,
                 metadata={
                     **(chunk.metadata or {}),
-                    'refined_by': refined_by
+                    'refined_by': refined_by,
+                    **extra_meta,
                 },
                 source_ref=chunk.source_ref
             )

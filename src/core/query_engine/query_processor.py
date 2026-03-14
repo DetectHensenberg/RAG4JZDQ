@@ -223,7 +223,7 @@ class QueryProcessor:
         tokens: List[str] = []
 
         # Use jieba to segment (handles Chinese + keeps English intact)
-        raw_tokens = jieba.lcut(text)
+        raw_tokens = list(jieba.cut(text))
 
         for token in raw_tokens:
             token = token.strip()

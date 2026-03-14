@@ -108,6 +108,7 @@ traces.jsonl
 .env
 .env.local
 .env.*.local
+.encrypt_key
 secrets.yaml
 
 # Settings with secrets (use settings.yaml.example as template)

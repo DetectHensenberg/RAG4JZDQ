@@ -21,7 +21,7 @@ class LoaderFactory:
     """Factory for creating document loaders based on file extension.
 
     Supports:
-    - .pdf  → PdfLoader  (MarkItDown + Vision LLM for scanned pages)
+    - .pdf  → LayoutPdfLoader (layout) or PdfLoader (markitdown)
     - .pptx → PptxLoader (python-pptx + Vision LLM for slide understanding)
     - .ppt  → PptxLoader
     - .docx → PdfLoader  (MarkItDown handles DOCX natively)
@@ -35,6 +35,7 @@ class LoaderFactory:
         extract_images: bool = True,
         image_storage_dir: str | Path = "data/images",
         vision_llm: Optional[Any] = None,
+        pdf_parser: str = "markitdown",
     ) -> BaseLoader:
         """Create the appropriate loader for a given file.
 
@@ -43,6 +44,7 @@ class LoaderFactory:
             extract_images: Whether to extract images.
             image_storage_dir: Base directory for storing extracted images.
             vision_llm: Optional Vision LLM instance for enhanced extraction.
+            pdf_parser: PDF parsing backend: "markitdown" or "layout".
 
         Returns:
             A BaseLoader instance appropriate for the file type.
@@ -58,6 +60,16 @@ class LoaderFactory:
             raise FileNotFoundError(f"File not found: {file_path}")
         
         suffix = resolved.suffix.lower()
+
+        if suffix == ".pdf" and pdf_parser == "layout":
+            from src.libs.loader.layout_pdf_loader import LayoutPdfLoader
+
+            logger.info("Using LayoutPdfLoader for PDF (layout analysis + OCR)")
+            return LayoutPdfLoader(
+                extract_images=extract_images,
+                image_storage_dir=image_storage_dir,
+                vision_llm=vision_llm,
+            )
 
         if suffix in (".pdf", ".docx", ".txt", ".md"):
             from src.libs.loader.pdf_loader import PdfLoader

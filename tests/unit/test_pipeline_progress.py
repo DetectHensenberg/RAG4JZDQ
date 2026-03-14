@@ -5,7 +5,7 @@ callback at each pipeline stage with (stage_name, current, total).
 """
 
 from typing import List, Tuple
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -17,23 +17,23 @@ from src.ingestion.pipeline import IngestionPipeline
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _make_fake_pipeline() -> object:
+def _make_fake_pipeline() -> IngestionPipeline:
     """Build a fake IngestionPipeline that doesn't require real settings."""
 
-    class FP:
-        collection = "test"
-        force = False
-
-    fp = FP()
+    # Create instance without calling real __init__ (which needs Settings)
+    fp = object.__new__(IngestionPipeline)
+    fp.collection = "test"
+    fp.force = False
+    fp._image_storage_dir = "data/images/test"
 
     # Stage 1: integrity
     fp.integrity_checker = MagicMock()
     fp.integrity_checker.compute_sha256.return_value = "hash123"
     fp.integrity_checker.should_skip.return_value = False
 
-    # Stage 2: loader
-    fp.loader = MagicMock()
-    fp.loader.load.return_value = Document(
+    # Stage 2: loader (LoaderFactory.create is called inline in run())
+    fp._mock_loader = MagicMock()
+    fp._mock_loader.load.return_value = Document(
         id="doc1", text="Hello world. " * 50, metadata={"source_path": "test.pdf", "images": []}
     )
 
@@ -76,7 +76,9 @@ def _collect_progress(fp) -> List[Tuple[str, int, int]]:
     def on_progress(stage: str, current: int, total: int) -> None:
         calls.append((stage, current, total))
 
-    IngestionPipeline.run(fp, "test.pdf", on_progress=on_progress)
+    with patch("src.ingestion.pipeline.LoaderFactory") as mock_lf:
+        mock_lf.create.return_value = fp._mock_loader
+        IngestionPipeline.run(fp, "test.pdf", on_progress=on_progress)
     return calls
 
 
@@ -113,7 +115,9 @@ class TestPipelineProgressCallback:
     def test_no_callback_no_crash(self) -> None:
         """on_progress=None should not break anything."""
         fp = _make_fake_pipeline()
-        result = IngestionPipeline.run(fp, "test.pdf", on_progress=None)
+        with patch("src.ingestion.pipeline.LoaderFactory") as mock_lf:
+            mock_lf.create.return_value = fp._mock_loader
+            result = IngestionPipeline.run(fp, "test.pdf", on_progress=None)
         assert result.success
 
     def test_callback_with_trace(self) -> None:
@@ -125,7 +129,9 @@ class TestPipelineProgressCallback:
         def on_progress(stage: str, current: int, total: int) -> None:
             calls.append((stage, current, total))
 
-        IngestionPipeline.run(fp, "test.pdf", trace=trace, on_progress=on_progress)
+        with patch("src.ingestion.pipeline.LoaderFactory") as mock_lf:
+            mock_lf.create.return_value = fp._mock_loader
+            IngestionPipeline.run(fp, "test.pdf", trace=trace, on_progress=on_progress)
         assert len(calls) == 6
         assert len(trace.stages) >= 5  # trace records from F4
 

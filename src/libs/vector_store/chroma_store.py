@@ -145,6 +145,42 @@ class ChromaStore(BaseVectorStore):
                 f"Failed to get or create collection '{self.collection_name}': {e}"
             ) from e
         
+        # Verify collection is readable (detect HNSW corruption early)
+        try:
+            self.collection.count()
+        except Exception as e:
+            logger.warning(
+                f"HNSW index corrupted for collection '{self.collection_name}': {e}. "
+                f"Auto-recovering by resetting ChromaDB..."
+            )
+            try:
+                import shutil
+                # Close current client
+                del self.client
+                # Remove corrupted data
+                shutil.rmtree(str(self.persist_directory), ignore_errors=True)
+                self.persist_directory.mkdir(parents=True, exist_ok=True)
+                # Re-initialize
+                self.client = chromadb.PersistentClient(
+                    path=str(self.persist_directory),
+                    settings=ChromaSettings(
+                        anonymized_telemetry=False,
+                        allow_reset=True,
+                        is_persistent=True,
+                    ),
+                )
+                self.collection = self.client.get_or_create_collection(
+                    name=self.collection_name,
+                    metadata={"hnsw:space": "cosine"},
+                )
+                logger.warning(
+                    "ChromaDB auto-recovered. Data was lost — please re-ingest documents."
+                )
+            except Exception as recovery_err:
+                raise RuntimeError(
+                    f"Failed to auto-recover ChromaDB: {recovery_err}"
+                ) from recovery_err
+        
         logger.info(
             f"ChromaStore initialized successfully. "
             f"Collection count: {self.collection.count()}"

@@ -88,8 +88,9 @@ observability:
 ingestion:
   chunk_size: 1000
   chunk_overlap: 200
-  splitter: "recursive"  # Options: recursive, semantic, fixed_length
+  splitter: "structure"  # Options: recursive, structure
   batch_size: 100
+  pdf_parser: "layout"  # Options: markitdown, layout (layout = 版面分析 + OCR回退)
   
   # Chunk Refiner Configuration (C5)
   chunk_refiner:
