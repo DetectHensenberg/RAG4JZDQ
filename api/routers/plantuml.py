@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import logging
+import re
 import zlib
 from typing import Optional
 
@@ -16,15 +17,41 @@ from pydantic import BaseModel
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
-# Kroki.io public API (free, no auth required)
-# Can be self-hosted for production
-KROKI_URL = "https://kroki.io/plantuml/svg"
+# Kroki rendering server (local Docker preferred, fallback to public)
+# Local: docker run -d --name kroki -p 8200:8000 --restart unless-stopped yuzutech/kroki
+KROKI_BASE = "http://localhost:8200"
+
+# In-memory SVG cache (md5 -> bytes), avoids duplicate Kroki calls
+_svg_cache: dict[str, bytes] = {}
+_CACHE_MAX = 200
 
 
 class PlantUMLRequest(BaseModel):
     """Request model for PlantUML rendering."""
     code: str
     format: str = "svg"
+
+
+def _sanitize_plantuml(code: str) -> str:
+    """Fix common LLM mistakes in PlantUML syntax."""
+    # Chinese em-dash arrow -> PlantUML arrow
+    code = code.replace("\u2014>", "-->")    # —>
+    code = code.replace("\u2014\u2014>", "-->")  # ——>
+    code = code.replace("\u2192", "-->")     # →
+    code = code.replace("\u2190", "<--")     # ←
+    code = code.replace("\u21d2", "==>")     # ⇒
+    # Full-width punctuation -> ASCII
+    code = code.replace("\uff08", "(")       # （
+    code = code.replace("\uff09", ")")       # ）
+    code = code.replace("\uff1a", ":")       # ：
+    code = code.replace("\uff1b", ";")       # ；
+    code = code.replace("\u3001", ",")       # 、
+    code = code.replace("\u201c", '"')       # \u201c
+    code = code.replace("\u201d", '"')       # \u201d
+    # Fix broken arrows with extra spaces
+    code = re.sub(r"-\s+->", "-->", code)
+    code = re.sub(r"<-\s+-", "<--", code)
+    return code
 
 
 def _encode_plantuml(text: str) -> str:
@@ -48,12 +75,20 @@ async def render_plantuml(req: PlantUMLRequest):
     Returns:
         SVG or PNG image data
     """
+    code = _sanitize_plantuml(req.code)
+
+    # Check cache
+    cache_key = hashlib.md5(code.encode()).hexdigest()
+    if cache_key in _svg_cache:
+        content_type = "image/svg+xml" if req.format == "svg" else "image/png"
+        return Response(content=_svg_cache[cache_key], media_type=content_type)
+
     try:
         # Use Kroki POST API (more reliable than GET with encoded URL)
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
-                f"https://kroki.io/plantuml/{req.format}",
-                content=req.code.encode('utf-8'),
+                f"{KROKI_BASE}/plantuml/{req.format}",
+                content=code.encode('utf-8'),
                 headers={"Content-Type": "text/plain"},
             )
             
@@ -64,6 +99,11 @@ async def render_plantuml(req: PlantUMLRequest):
                     status_code=400,
                 )
             
+            # Cache result
+            if len(_svg_cache) >= _CACHE_MAX:
+                _svg_cache.pop(next(iter(_svg_cache)))
+            _svg_cache[cache_key] = resp.content
+
             content_type = "image/svg+xml" if req.format == "svg" else "image/png"
             return Response(content=resp.content, media_type=content_type)
             
@@ -82,7 +122,7 @@ async def render_plantuml_base64(req: PlantUMLRequest):
     """
     try:
         encoded = _encode_plantuml(req.code)
-        url = f"https://kroki.io/plantuml/{req.format}/{encoded}"
+        url = f"{KROKI_BASE}/plantuml/{req.format}/{encoded}"
         
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.get(url)

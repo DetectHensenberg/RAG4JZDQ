@@ -42,8 +42,16 @@ except ImportError:
 # OCR engines (optional)
 try:
     import pytesseract
+    # Auto-detect Tesseract binary on Windows if not in PATH
+    import shutil
+    if not shutil.which("tesseract"):
+        _win_path = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+        if Path(_win_path).exists():
+            pytesseract.pytesseract.tesseract_cmd = _win_path
+    # Verify the actual tesseract binary is reachable
+    pytesseract.get_tesseract_version()
     TESSERACT_AVAILABLE = True
-except ImportError:
+except (ImportError, Exception):
     TESSERACT_AVAILABLE = False
 
 try:

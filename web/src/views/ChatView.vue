@@ -184,6 +184,12 @@ async function triggerMermaid() {
   if (messagesRef.value) {
     await renderMermaidInContainer(messagesRef.value)
   }
+  // Retry after delay — Vue may not have finished all DOM updates on first nextTick
+  setTimeout(async () => {
+    if (messagesRef.value) {
+      await renderMermaidInContainer(messagesRef.value)
+    }
+  }, 800)
 }
 
 function saveAsMarkdown(content: string, idx: number) {

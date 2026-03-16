@@ -28,9 +28,19 @@ CONTEXT_PRECISION = "context_precision"
 SUPPORTED_METRICS = {FAITHFULNESS, ANSWER_RELEVANCY, CONTEXT_PRECISION}
 
 
+def _patch_langchain_compat() -> None:
+    """Patch langchain-core 0.3.x to add ContextOverflowError needed by langchain-openai 0.3.x."""
+    import langchain_core.exceptions as _exc_mod
+    if not hasattr(_exc_mod, "ContextOverflowError"):
+        class ContextOverflowError(Exception):
+            """Shim for langchain-core <1.0 compatibility."""
+        _exc_mod.ContextOverflowError = ContextOverflowError  # type: ignore[attr-defined]
+
+
 def _import_ragas() -> None:
     """Validate that ragas is importable, raising a clear error if not."""
     try:
+        _patch_langchain_compat()
         import ragas  # noqa: F401
     except ImportError as exc:
         raise ImportError(

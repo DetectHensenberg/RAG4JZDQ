@@ -6,7 +6,9 @@ a lightweight, open-source embedding database designed for local-first deploymen
 
 from __future__ import annotations
 
+import hashlib
 import logging
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
@@ -87,10 +89,13 @@ class ChromaStore(BaseVectorStore):
             ) from e
         
         # Collection name (allow override)
-        self.collection_name = kwargs.get(
+        raw_name = kwargs.get(
             'collection_name',
             getattr(vector_store_config, 'collection_name', 'knowledge_hub')
         )
+        self.collection_name = self._sanitize_collection_name(raw_name)
+        if self.collection_name != raw_name:
+            logger.info(f"Collection name sanitized: '{raw_name}' -> '{self.collection_name}'")
         
         # Persist directory (allow override)
         persist_dir_str = kwargs.get(
@@ -98,6 +103,11 @@ class ChromaStore(BaseVectorStore):
             getattr(vector_store_config, 'persist_directory', './data/db/chroma')
         )
         self.persist_directory = resolve_path(persist_dir_str)
+        
+        # ChromaDB Rust backend cannot handle non-ASCII chars in absolute
+        # paths (e.g. Chinese directory names). Keep a relative path for
+        # the PersistentClient and use the absolute path for file ops.
+        self._chroma_path_str = persist_dir_str  # original relative string
         
         # Ensure persist directory exists
         self.persist_directory.mkdir(parents=True, exist_ok=True)
@@ -107,20 +117,28 @@ class ChromaStore(BaseVectorStore):
             f"persist_directory='{self.persist_directory}'"
         )
         
-        # Initialize ChromaDB client with persistent storage
+        # ── Pre-init backup ──────────────────────────────────────────
+        # Backup HNSW BEFORE creating PersistentClient, because the
+        # client constructor may trigger compaction which can fail on
+        # a corrupted index. Pure file copy — no ChromaDB API involved.
+        from src.libs.vector_store.chroma_backup import ChromaBackupManager
+        self.backup_manager = ChromaBackupManager(chroma_dir=self.persist_directory)
+        
+        has_hnsw = bool(self.backup_manager._find_hnsw_dirs())
+        has_data = self._sqlite_has_data(self.persist_directory)
+        if has_hnsw and has_data:
+            self.backup_manager.backup(label="startup")
+        
+        # ── Initialize ChromaDB client ───────────────────────────────
         try:
             self.client = chromadb.PersistentClient(
-                path=str(self.persist_directory),
+                path=self._chroma_path_str,
                 settings=ChromaSettings(
                     anonymized_telemetry=False,
                     allow_reset=True,
-                    # Enable SQLite WAL mode for better write stability on Windows
-                    # This prevents index corruption when process is terminated
                     is_persistent=True,
                 )
             )
-            # Manually enable WAL mode on the SQLite database
-            # ChromaDB doesn't expose this directly, so we do it via sqlite3
             import sqlite3
             db_path = self.persist_directory / "chroma.sqlite3"
             if db_path.exists():
@@ -129,7 +147,7 @@ class ChromaStore(BaseVectorStore):
                 conn.execute("PRAGMA synchronous=NORMAL;")
                 conn.close()
                 logger.debug("SQLite WAL mode enabled for ChromaDB")
-        except (RuntimeError, OSError, sqlite3.Error) as e:
+        except (RuntimeError, OSError) as e:
             raise RuntimeError(
                 f"Failed to initialize ChromaDB client at '{self.persist_directory}': {e}"
             ) from e
@@ -138,58 +156,72 @@ class ChromaStore(BaseVectorStore):
         try:
             self.collection = self.client.get_or_create_collection(
                 name=self.collection_name,
-                metadata={"hnsw:space": "cosine"}  # Use cosine similarity
+                metadata={"hnsw:space": "cosine"}
             )
         except (RuntimeError, ValueError) as e:
             raise RuntimeError(
                 f"Failed to get or create collection '{self.collection_name}': {e}"
             ) from e
         
-        # Verify collection is readable (detect HNSW corruption early)
         try:
-            self.collection.count()
-        except Exception as e:
-            logger.warning(
-                f"HNSW index corrupted for collection '{self.collection_name}': {e}. "
-                f"Auto-recovering by resetting ChromaDB..."
-            )
-            try:
-                import shutil
-                # Close current client
-                del self.client
-                # Remove corrupted data
-                shutil.rmtree(str(self.persist_directory), ignore_errors=True)
-                self.persist_directory.mkdir(parents=True, exist_ok=True)
-                # Re-initialize
-                self.client = chromadb.PersistentClient(
-                    path=str(self.persist_directory),
-                    settings=ChromaSettings(
-                        anonymized_telemetry=False,
-                        allow_reset=True,
-                        is_persistent=True,
-                    ),
-                )
-                self.collection = self.client.get_or_create_collection(
-                    name=self.collection_name,
-                    metadata={"hnsw:space": "cosine"},
-                )
-                logger.warning(
-                    "ChromaDB auto-recovered. Data was lost — please re-ingest documents."
-                )
-            except Exception as recovery_err:
-                raise RuntimeError(
-                    f"Failed to auto-recover ChromaDB: {recovery_err}"
-                ) from recovery_err
+            count = self.collection.count()
+        except Exception:
+            count = "unknown (HNSW may need restore)"
         
         logger.info(
             f"ChromaStore initialized successfully. "
-            f"Collection count: {self.collection.count()}"
+            f"Collection count: {count}"
         )
         
         # Register graceful shutdown to prevent index corruption
         import atexit
         atexit.register(self.close)
     
+    @staticmethod
+    def _sqlite_has_data(persist_dir: Path) -> bool:
+        """Check if ChromaDB SQLite has embeddings (bypasses ChromaDB API)."""
+        import sqlite3
+        db_path = persist_dir / "chroma.sqlite3"
+        if not db_path.exists():
+            return False
+        try:
+            conn = sqlite3.connect(str(db_path))
+            row = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()
+            conn.close()
+            return row[0] > 0 if row else False
+        except Exception:
+            return False
+    
+    @staticmethod
+    def _sanitize_collection_name(name: str) -> str:
+        """Sanitize collection name for ChromaDB compatibility.
+
+        ChromaDB requires: 3-512 chars from [a-zA-Z0-9._-],
+        starting and ending with [a-zA-Z0-9].
+        Non-ASCII names (e.g. Chinese) are converted to a readable hash prefix.
+        """
+        # If already valid, return as-is
+        if re.fullmatch(r"[a-zA-Z0-9][a-zA-Z0-9._-]{1,510}[a-zA-Z0-9]", name):
+            return name
+
+        # Replace non-ASCII / invalid chars with underscore, keep alnum and ._-
+        sanitized = re.sub(r"[^a-zA-Z0-9._-]", "_", name)
+        # Remove leading/trailing invalid chars
+        sanitized = sanitized.strip("._-")
+
+        if len(sanitized) < 3:
+            # Fallback: use hash of original name
+            h = hashlib.md5(name.encode("utf-8")).hexdigest()[:12]
+            sanitized = f"col_{h}"
+
+        # Ensure start/end are alphanumeric
+        if not sanitized[0].isalnum():
+            sanitized = "c" + sanitized
+        if not sanitized[-1].isalnum():
+            sanitized = sanitized + "0"
+
+        return sanitized[:512]
+
     def upsert(
         self,
         records: List[Dict[str, Any]],
@@ -239,16 +271,35 @@ class ChromaStore(BaseVectorStore):
             document = metadata.get('text', record['id'])
             documents.append(str(document))
         
-        # Perform upsert (ChromaDB's add() is idempotent with same IDs)
+        # Perform upsert in batches with retry for compaction conflicts
+        import time as _time
+        UPSERT_BATCH = 50
+        MAX_RETRIES = 3
         try:
-            self.collection.upsert(
-                ids=ids,
-                embeddings=embeddings,
-                metadatas=metadatas,
-                documents=documents,
-            )
+            for start in range(0, len(ids), UPSERT_BATCH):
+                end = min(start + UPSERT_BATCH, len(ids))
+                for attempt in range(1, MAX_RETRIES + 1):
+                    try:
+                        self.collection.upsert(
+                            ids=ids[start:end],
+                            embeddings=embeddings[start:end],
+                            metadatas=metadatas[start:end],
+                            documents=documents[start:end],
+                        )
+                        break  # success
+                    except Exception as batch_err:
+                        err_msg = str(batch_err).lower()
+                        if "compaction" in err_msg and attempt < MAX_RETRIES:
+                            wait = 2 ** attempt
+                            logger.warning(
+                                f"Compaction conflict on batch {start}-{end}, "
+                                f"retry {attempt}/{MAX_RETRIES} in {wait}s..."
+                            )
+                            _time.sleep(wait)
+                        else:
+                            raise
             logger.debug(f"Successfully upserted {len(records)} records to ChromaDB")
-            # Flush WAL to disk after each upsert to reduce corruption risk
+            # Flush WAL to disk after upsert to reduce corruption risk
             self._wal_checkpoint()
         except (RuntimeError, ValueError) as e:
             raise RuntimeError(
@@ -289,7 +340,7 @@ class ChromaStore(BaseVectorStore):
         # Build ChromaDB where clause from filters
         where_clause = self._build_where_clause(filters) if filters else None
         
-        # Perform query
+        # Perform query with auto-restore on HNSW corruption
         try:
             results = self.collection.query(
                 query_embeddings=[vector],
@@ -297,10 +348,31 @@ class ChromaStore(BaseVectorStore):
                 where=where_clause,
                 include=["metadatas", "distances", "documents"]
             )
-        except (RuntimeError, ValueError) as e:
-            raise RuntimeError(
-                f"Failed to query ChromaDB with top_k={top_k}: {e}"
-            ) from e
+        except Exception as e:
+            err_msg = str(e).lower()
+            if "hnsw" in err_msg or "compaction" in err_msg or "segment" in err_msg:
+                logger.warning(f"HNSW query failed: {e}. Attempting auto-restore...")
+                if self._try_restore_from_backup():
+                    # Retry query once after restore
+                    try:
+                        results = self.collection.query(
+                            query_embeddings=[vector],
+                            n_results=top_k,
+                            where=where_clause,
+                            include=["metadatas", "distances", "documents"]
+                        )
+                    except Exception as retry_err:
+                        raise RuntimeError(
+                            f"Query failed after HNSW restore: {retry_err}"
+                        ) from retry_err
+                else:
+                    raise RuntimeError(
+                        f"HNSW corrupted and no backup available: {e}"
+                    ) from e
+            else:
+                raise RuntimeError(
+                    f"Failed to query ChromaDB with top_k={top_k}: {e}"
+                ) from e
         
         # Transform results to standard format
         # ChromaDB returns nested lists: [[id1, id2, ...]]
@@ -575,19 +647,57 @@ class ChromaStore(BaseVectorStore):
         logger.debug(f"Retrieved {len([r for r in output if r])} of {len(ids)} records by IDs")
         return output
     
+    def _try_restore_from_backup(self) -> bool:
+        """Attempt to restore HNSW from backup and re-initialize client.
+        
+        Returns:
+            True if restore succeeded and collection is usable.
+        """
+        import gc
+        import time as _time
+        try:
+            # Close old client completely before touching files
+            del self.client
+            gc.collect()
+            _time.sleep(1)  # Windows file handle release delay
+            
+            if not self.backup_manager.restore_latest():
+                return False
+            
+            # Re-initialize with restored files (use relative path to
+            # avoid ChromaDB Rust non-ASCII path bug)
+            self.client = chromadb.PersistentClient(
+                path=self._chroma_path_str,
+                settings=ChromaSettings(
+                    anonymized_telemetry=False,
+                    allow_reset=True,
+                    is_persistent=True,
+                ),
+            )
+            self.collection = self.client.get_or_create_collection(
+                name=self.collection_name,
+                metadata={"hnsw:space": "cosine"},
+            )
+            count = self.collection.count()
+            logger.info(f"HNSW auto-restore succeeded! Collection count: {count}")
+            return True
+        except Exception as e:
+            logger.error(f"HNSW auto-restore failed: {e}")
+            return False
+    
     def _wal_checkpoint(self) -> None:
         """Flush SQLite WAL to main database file.
         
         This reduces the risk of index corruption if the process is
         terminated unexpectedly (e.g., Ctrl+C, crash, power loss).
-        Uses PASSIVE mode which doesn't block readers.
+        Uses TRUNCATE mode for stronger persistence guarantee.
         """
         try:
             import sqlite3
             db_path = self.persist_directory / "chroma.sqlite3"
             if db_path.exists():
                 conn = sqlite3.connect(str(db_path))
-                conn.execute("PRAGMA wal_checkpoint(PASSIVE);")
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
                 conn.close()
         except Exception:
             pass  # Best-effort, don't fail the operation

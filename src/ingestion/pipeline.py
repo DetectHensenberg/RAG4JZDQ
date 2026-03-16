@@ -269,6 +269,7 @@ class IngestionPipeline:
         file_path: str,
         trace: Optional[TraceContext] = None,
         on_progress: Optional[Callable[[str, int, int], None]] = None,
+        original_filename: Optional[str] = None,
     ) -> PipelineResult:
         """Execute the full ingestion pipeline on a file.
         
@@ -284,6 +285,7 @@ class IngestionPipeline:
             PipelineResult with success status and statistics
         """
         file_path = Path(file_path)
+        display_name = original_filename or file_path.name
         stages: Dict[str, Any] = {}
         _total_stages = 6
 
@@ -292,7 +294,7 @@ class IngestionPipeline:
                 on_progress(stage_name, step, _total_stages)
         
         logger.info(f"=" * 60)
-        logger.info(f"Starting Ingestion Pipeline for: {file_path}")
+        logger.info(f"Starting Ingestion Pipeline for: {display_name}")
         logger.info(f"Collection: {self.collection}")
         logger.info(f"=" * 60)
         
@@ -326,8 +328,8 @@ class IngestionPipeline:
             
             _t0 = time.monotonic()
             pdf_parser = "markitdown"
-            if self._settings.ingestion:
-                pdf_parser = getattr(self._settings.ingestion, "pdf_parser", "markitdown")
+            if self.settings.ingestion:
+                pdf_parser = getattr(self.settings.ingestion, "pdf_parser", "markitdown")
             loader = LoaderFactory.create(
                 file_path,
                 extract_images=True,
@@ -335,6 +337,10 @@ class IngestionPipeline:
                 pdf_parser=pdf_parser,
             )
             document = loader.load(str(file_path))
+            # Override source_path with original filename if provided
+            if original_filename and "source_path" in document.metadata:
+                document.metadata["source_path"] = original_filename
+                document.metadata["original_filename"] = original_filename
             _elapsed = (time.monotonic() - _t0) * 1000.0
             
             text_preview = document.text[:200].replace('\n', ' ') + "..." if len(document.text) > 200 else document.text
@@ -569,6 +575,24 @@ class IngestionPipeline:
             # Mark Success
             # ─────────────────────────────────────────────────────────────
             self.integrity_checker.mark_success(file_hash, str(file_path), self.collection)
+            
+            # Force ChromaDB to persist HNSW index to disk after each file
+            # This prevents index corruption during long batch runs
+            try:
+                self.vector_upserter.vector_store._wal_checkpoint()
+                logger.info("  💾 ChromaDB WAL checkpoint completed")
+            except Exception as flush_err:
+                logger.warning(f"  ⚠️  ChromaDB flush warning: {flush_err}")
+            
+            # Verify HNSW health and create backup after successful ingestion
+            try:
+                vs = self.vector_upserter.vector_store
+                if hasattr(vs, 'backup_manager'):
+                    vs.backup_manager.verify_and_backup(
+                        vs.collection, label="ingest"
+                    )
+            except Exception as bak_err:
+                logger.warning(f"  ⚠️  HNSW backup warning: {bak_err}")
             
             logger.info("\n" + "=" * 60)
             logger.info("✅ Pipeline completed successfully!")

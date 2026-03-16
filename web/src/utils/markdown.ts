@@ -51,6 +51,15 @@ export function renderMarkdown(text: string): string {
     '<img src="/api/data/images/$1/raw" alt="$1" class="inline-ref-img" />'
   )
 
+  // Pre-process: wrap bare @startuml...@enduml blocks in ```plantuml fences
+  // Skip if already fenced (```plantuml present) to avoid double-wrapping
+  if (!text.includes('```plantuml')) {
+    text = text.replace(
+      /(?:^|\n)(@startuml[\s\S]*?@enduml)/g,
+      '\n```plantuml\n$1\n```\n'
+    )
+  }
+
   // Pre-process: wrap bare mermaid syntax in code fences
   // Captures: keyword line + all subsequent lines that look like mermaid nodes/edges
   const MERMAID_KEYWORDS = /^(graph|flowchart)\s+(LR|RL|TB|TD|BT)\s*$/m
@@ -161,10 +170,21 @@ export async function renderMermaidInContainer(container: HTMLElement): Promise<
     }
   }
   
-  // Post-detect: scan <pre><code> blocks for mermaid syntax that wasn't fenced
+  // Post-detect: scan <pre><code> blocks for plantuml/mermaid that wasn't fenced
   const codeBlocks = container.querySelectorAll<HTMLElement>('pre > code')
   for (const codeEl of codeBlocks) {
     const text = codeEl.textContent?.trim() || ''
+    if (text.startsWith('@startuml')) {
+      const pre = codeEl.parentElement!
+      const id = `plantuml-ph-${++plantumlPlaceholderId}`
+      plantumlStore.set(id, text)
+      const div = document.createElement('div')
+      div.className = 'plantuml-block'
+      div.id = id
+      div.innerHTML = '<div class="plantuml-loading">图表渲染中…</div>'
+      pre.replaceWith(div)
+      continue
+    }
     if (MERMAID_CODE_PATTERN.test(text)) {
       const pre = codeEl.parentElement!
       const id = `mermaid-post-${++mermaidPlaceholderId}`
@@ -174,6 +194,28 @@ export async function renderMermaidInContainer(container: HTMLElement): Promise<
       div.id = id
       div.innerHTML = '<div class="mermaid-loading">图表渲染中…</div>'
       pre.replaceWith(div)
+    }
+  }
+
+  // Re-query: post-detect may have created new plantuml-block elements
+  const postBlocks = container.querySelectorAll<HTMLElement>('.plantuml-block:not(.plantuml-rendered)')
+  for (const el of postBlocks) {
+    const code = plantumlStore.get(el.id)
+    if (!code) continue
+    try {
+      const resp = await fetch(PLANTUML_RENDER_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code, format: 'svg' }),
+      })
+      if (!resp.ok) throw new Error(`Render failed: ${resp.status}`)
+      const svg = await resp.text()
+      el.innerHTML = svg
+      el.classList.add('plantuml-rendered')
+    } catch (e) {
+      console.warn('PlantUML post-detect render failed:', e)
+      el.innerHTML = `<pre class="plantuml-error"><code>${escapeHtml(code)}</code></pre>`
+      el.classList.add('plantuml-rendered')
     }
   }
 

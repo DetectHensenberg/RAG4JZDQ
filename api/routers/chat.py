@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import sqlite3
 import time
 from pathlib import Path
@@ -18,98 +19,163 @@ from api.models import ChatRequest
 from src.core.settings import resolve_path
 from src.core.response.multimodal_assembler import MultimodalAssembler
 from src.ingestion.storage.image_storage import ImageStorage
+
+
+def _is_background_image(img_path: str, min_edge: float = 8.0, min_dim: int = 150) -> bool:
+    """Return True if the image looks like a PPT background / decoration.
+
+    Uses gradient-based edge strength: real content (tables, diagrams, text)
+    has edge > 8, while gradients and solid backgrounds have edge < 5.
+    """
+    try:
+        from PIL import Image
+        import numpy as np
+
+        img = Image.open(img_path).convert("RGB")
+        w, h = img.size
+        if w < min_dim or h < min_dim:
+            return True  # too small (icon)
+
+        # Down-sample large images for speed
+        if w > 800 or h > 800:
+            img.thumbnail((800, 800))
+
+        arr = np.array(img, dtype=np.float32)
+        gray = arr.mean(axis=2)
+        gx = np.diff(gray, axis=1)
+        gy = np.diff(gray, axis=0)
+        edge_strength = (np.abs(gx).mean() + np.abs(gy).mean()) / 2.0
+        return edge_strength < min_edge
+    except Exception:
+        return False  # if analysis fails, keep the image
 from src.libs.llm.base_llm import Message
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Image relevance threshold (0.0 - 1.0)
-# Images with score below this threshold will not be returned
-IMAGE_RELEVANCE_THRESHOLD = 0.25
+# Images from retrieved chunks are inherently relevant; keep threshold low
+IMAGE_RELEVANCE_THRESHOLD = 0.10
 
 
 def _calculate_image_relevance(
     question: str,
     caption: str | None,
     chunk_score: float,
+    rank: int = 0,
+    total_results: int = 1,
 ) -> float:
-    """Calculate image relevance score based on caption semantic matching.
+    """Calculate image relevance score.
     
-    Scoring formula:
-    - Base score: chunk retrieval score (0.0 - 1.0)
-    - Caption boost: semantic similarity between caption and question
-    - Final score = chunk_score * 0.6 + caption_similarity * 0.4
+    Since chunks are already retrieved by hybrid search, their images
+    are inherently relevant. Scoring is based on:
+    - Rank-based base score (higher rank = more relevant)
+    - Caption keyword overlap bonus (if caption available)
     
     Args:
         question: User's question
         caption: Image caption text (may be None)
-        chunk_score: Retrieval score of the chunk containing this image
+        chunk_score: Raw retrieval score (may be very small)
+        rank: 0-based rank of the chunk in results
+        total_results: Total number of results retrieved
         
     Returns:
         Relevance score between 0.0 and 1.0
     """
-    if not caption:
-        # No caption: rely only on chunk score with penalty
-        return chunk_score * 0.5
-    
-    # Simple keyword overlap scoring (fast, no additional API calls)
-    question_lower = question.lower()
-    caption_lower = caption.lower()
-    
-    # Tokenize (simple split on whitespace and punctuation)
     import re
-    q_tokens = set(re.findall(r'\w+', question_lower))
-    c_tokens = set(re.findall(r'\w+', caption_lower))
+    
+    # Rank-based base: top result gets 0.8, last gets 0.3
+    if total_results > 1:
+        rank_score = 0.8 - (rank / (total_results - 1)) * 0.5
+    else:
+        rank_score = 0.8
+    
+    if not caption:
+        return rank_score * 0.7
+    
+    # Caption keyword overlap bonus
+    q_tokens = set(re.findall(r'\w+', question.lower()))
+    c_tokens = set(re.findall(r'\w+', caption.lower()))
     
     if not q_tokens or not c_tokens:
-        return chunk_score * 0.6
+        return rank_score * 0.8
     
-    # Jaccard similarity with bonus for exact phrase matches
     intersection = q_tokens & c_tokens
     union = q_tokens | c_tokens
     jaccard = len(intersection) / len(union) if union else 0
     
-    # Boost for multi-word phrase matches
+    # Phrase match bonus
     phrase_boost = 0.0
-    for i in range(len(question_lower) - 3):
-        phrase = question_lower[i:i+4].strip()
-        if len(phrase) >= 3 and phrase in caption_lower:
-            phrase_boost = 0.2
+    q_lower = question.lower()
+    c_lower = caption.lower()
+    for i in range(len(q_lower) - 3):
+        phrase = q_lower[i:i+4].strip()
+        if len(phrase) >= 3 and phrase in c_lower:
+            phrase_boost = 0.15
             break
     
-    caption_similarity = min(1.0, jaccard + phrase_boost)
+    caption_sim = min(1.0, jaccard + phrase_boost)
     
-    # Weighted combination
-    final_score = chunk_score * 0.6 + caption_similarity * 0.4
-    
-    return final_score
+    return rank_score * 0.6 + caption_sim * 0.4
 
 _HISTORY_DB = resolve_path("data/qa_history.db")
 
 SYSTEM_PROMPT = """你是一位专业的系统方案架构师。基于提供的参考资料，撰写专业、结构清晰的回答。
 
 要求：
-1. 优先使用参考资料中的信息
-2. 结构清晰，使用 Markdown 格式
-3. 在回答末尾标注参考了哪些来源文档
-4. **优先引用数据库中已有的图片**（参考资料中标注"本段包含图片"的）
-5. 仅在以下情况才生成图表：
-   - 需要展示简单的线性流程（3-5步）
-   - 需要展示简单的时序关系（2-3个角色）
-6. **禁止生成复杂图表**：
-   - 禁止总分结构（一个节点分出多个子节点）
-   - 禁止超过5个节点的图
-   - 禁止嵌套结构
-7. 如需生成图表，使用 PlantUML 语法：
-   ```plantuml
-   @startuml
-   left to right direction
-   步骤1 --> 步骤2 --> 步骤3
-   @enduml
-   ```
+1. 优先使用参考资料中的信息，结构清晰，使用 Markdown 格式
+2. **在回答末尾标注实际来源文件名**，格式示例：
+   > 参考来源：`浅谈国产GPU芯片全景图.md`、`数字化转型方案.pptx`
+   必须使用每段参考资料括号里"来源: xxx"的**真实文件名**，禁止自行编造或概括描述
 
-记住：能用文字描述清楚的，就不要生成图表。图表只用于最简单的线性流程。
+## 图片引用规则（重要）
+参考资料中可能包含 [IMAGE: xxx] 格式的图片引用和对应的 (Description: ...) 描述。
+- **当参考资料中有 [IMAGE: xxx] 图片引用时，必须在回答的相关位置原样引用**
+- 引用格式：直接输出 [IMAGE: xxx]（保持原始 ID 不变），系统会自动渲染为图片
+- 在图片引用后面附上简要说明文字
+- 示例：如参考资料中有 [IMAGE: abc123_s1_2]，则在回答中写：
+
+  [IMAGE: abc123_s1_2]
+  *图：XX架构示意图*
+
+## 图表生成规则
+当参考资料中**没有相关图片**时，可以用 PlantUML 生成简单图表辅助说明：
+- 适用场景：流程图（3-8步）、时序图（2-4个角色）、简单架构图
+- 禁止超过 10 个节点的复杂图
+- 语法格式：
+  ```plantuml
+  @startuml
+  left to right direction
+  步骤1 --> 步骤2 --> 步骤3
+  @enduml
+  ```
 """
+
+
+def _strip_background_images(text: str, collection: str = "default") -> str:
+    """Remove [IMAGE: id]\\n(Description: ...) blocks for background images."""
+    image_storage = ImageStorage()
+    assembler = MultimodalAssembler(image_storage)
+
+    def _check_replace(m: re.Match) -> str:
+        img_id = m.group(1).strip()
+        img_path = None
+        try:
+            from src.core.response.multimodal_assembler import ImageReference
+            ref = ImageReference(image_id=img_id)
+            img_path = assembler.resolve_image_path(ref, collection)
+        except Exception:
+            pass
+        if img_path and _is_background_image(img_path):
+            return ""  # strip this image reference
+        return m.group(0)  # keep it
+
+    # Match [IMAGE: id]\n(Description: ...)\n
+    return re.sub(
+        r"\[IMAGE:\s*([^\]]+)\]\s*\n\(Description:[^\)]*\)\s*\n?",
+        _check_replace,
+        text,
+    )
 
 
 def _build_context(results: list, max_chars: int = 8000) -> str:
@@ -119,7 +185,7 @@ def _build_context(results: list, max_chars: int = 8000) -> str:
     for i, r in enumerate(results):
         source = r.metadata.get("source_path", "未知来源")
         source_name = Path(source).name if source != "未知来源" else source
-        text = r.text
+        text = _strip_background_images(r.text)
         remaining = max_chars - total
         if remaining <= 0:
             break
@@ -198,16 +264,32 @@ async def chat_stream(req: ChatRequest):
                 image_storage = ImageStorage()
                 assembler = MultimodalAssembler(image_storage)
                 
+                MIN_IMAGE_SIZE = 10_000  # Skip images < 10KB (icons, color blocks)
+                MAX_GALLERY_IMAGES = 6
+                
                 scored_images = []
-                for r in results:
+                total_results = len(results)
+                for rank, r in enumerate(results):
                     chunk_score = r.score
                     img_refs = assembler.extract_image_refs(r)
                     for ref in img_refs:
                         img_path = assembler.resolve_image_path(ref, req.collection)
                         if img_path:
+                            # Skip tiny images
+                            try:
+                                file_size = Path(img_path).stat().st_size
+                                if file_size < MIN_IMAGE_SIZE:
+                                    continue
+                            except OSError:
+                                continue
+                            # Skip PPT backgrounds / gradients (low edge content)
+                            if _is_background_image(img_path):
+                                continue
+                            
                             # Calculate relevance score
                             relevance = _calculate_image_relevance(
-                                question, ref.caption, chunk_score
+                                question, ref.caption, chunk_score,
+                                rank=rank, total_results=total_results,
                             )
                             
                             # Only include images above threshold
@@ -221,8 +303,8 @@ async def chat_stream(req: ChatRequest):
                                     "chunk_score": round(chunk_score, 3),
                                 })
                 
-                # Sort by relevance (highest first)
-                images = sorted(scored_images, key=lambda x: x["relevance"], reverse=True)
+                # Sort by relevance (highest first), cap at MAX_GALLERY_IMAGES
+                images = sorted(scored_images, key=lambda x: x["relevance"], reverse=True)[:MAX_GALLERY_IMAGES]
                 
                 if images:
                     logger.info(f"Found {len(images)} relevant images (threshold={IMAGE_RELEVANCE_THRESHOLD})")

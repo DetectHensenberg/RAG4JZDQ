@@ -50,8 +50,8 @@ try:
 except ImportError:
     PYMUPDF_AVAILABLE = False
 
-# DPI for rendering slides to images
-RENDER_DPI = 200
+# DPI for rendering slides to images (300 = crisp text/tables in PNG)
+RENDER_DPI = 300
 
 # Default prompt for Vision LLM slide understanding
 DEFAULT_SLIDE_PROMPT = (
@@ -71,7 +71,14 @@ def _check_libreoffice() -> Optional[str]:
     Returns:
         Path to the LibreOffice executable, or None if not found.
     """
-    for cmd in ("soffice", "libreoffice"):
+    # Check PATH first, then common Windows install locations
+    candidates = [
+        "soffice",
+        "libreoffice",
+        r"C:\Program Files\LibreOffice\program\soffice.exe",
+        r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
+    ]
+    for cmd in candidates:
         try:
             result = subprocess.run(
                 [cmd, "--version"],
@@ -80,6 +87,7 @@ def _check_libreoffice() -> Optional[str]:
                 timeout=10,
             )
             if result.returncode == 0:
+                logger.info(f"LibreOffice found: {cmd}")
                 return cmd
         except (FileNotFoundError, subprocess.TimeoutExpired):
             continue
@@ -208,18 +216,30 @@ class PptxLoader(BaseLoader):
         except Exception:
             pass
 
-        # Extract embedded images from PPTX (pictures, charts screenshots, etc.)
+        # Extract images: prefer high-quality slide rendering via LibreOffice,
+        # fall back to embedded blob extraction when LibreOffice is unavailable.
         if self.extract_images:
-            try:
-                text_content, images_metadata = self._extract_embedded_images(
-                    path, text_content, doc_hash
-                )
-                if images_metadata:
-                    metadata["images"] = images_metadata
-            except Exception as e:
-                logger.warning(
-                    f"Image extraction failed for {path}, continuing with text-only: {e}"
-                )
+            images_metadata: List[Dict[str, Any]] = []
+            if self._libreoffice_cmd and PYMUPDF_AVAILABLE:
+                try:
+                    text_content, images_metadata = self._render_slides_to_images(
+                        path, text_content, doc_hash
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Slide rendering failed, falling back to embedded extraction: {e}"
+                    )
+            if not images_metadata:
+                try:
+                    text_content, images_metadata = self._extract_embedded_images(
+                        path, text_content, doc_hash
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"Image extraction failed for {path}, continuing with text-only: {e}"
+                    )
+            if images_metadata:
+                metadata["images"] = images_metadata
 
         return Document(id=doc_id, text=text_content, metadata=metadata)
 
@@ -432,7 +452,139 @@ class PptxLoader(BaseLoader):
         return text_content, slides_processed
 
     # ------------------------------------------------------------------
-    # Embedded image extraction
+    # High-quality slide rendering (LibreOffice → PDF → PyMuPDF)
+    # ------------------------------------------------------------------
+
+    def _render_slides_to_images(
+        self,
+        pptx_path: Path,
+        text_content: str,
+        doc_hash: str,
+    ) -> tuple[str, List[Dict[str, Any]]]:
+        """Render each slide as a high-resolution PNG via LibreOffice.
+
+        Pipeline: PPTX → PDF (LibreOffice headless) → PNG per page (PyMuPDF).
+        This produces crisp images of tables, charts, SmartArt, and all
+        visual elements — unlike embedded blob extraction which depends on
+        PowerPoint's internal JPEG compression.
+
+        Args:
+            pptx_path: Path to the PPTX file.
+            text_content: Already-extracted Markdown text.
+            doc_hash: Document hash for image directory naming.
+
+        Returns:
+            Tuple of (modified_text, images_metadata_list).
+        """
+        image_dir = self.image_storage_dir / doc_hash
+        image_dir.mkdir(parents=True, exist_ok=True)
+
+        images_metadata: List[Dict[str, Any]] = []
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            # Step 1: PPTX → PDF via LibreOffice
+            logger.info(f"Rendering slides via LibreOffice: {pptx_path}")
+            try:
+                subprocess.run(
+                    [
+                        self._libreoffice_cmd,
+                        "--headless",
+                        "--convert-to", "pdf",
+                        "--outdir", tmpdir,
+                        str(pptx_path),
+                    ],
+                    capture_output=True,
+                    text=True,
+                    timeout=120,
+                    check=True,
+                )
+            except subprocess.CalledProcessError as e:
+                logger.warning(f"LibreOffice conversion failed: {e.stderr}")
+                return text_content, []
+            except subprocess.TimeoutExpired:
+                logger.warning("LibreOffice conversion timed out (120s)")
+                return text_content, []
+
+            pdf_path = Path(tmpdir) / (pptx_path.stem + ".pdf")
+            if not pdf_path.exists():
+                logger.warning(f"LibreOffice did not produce PDF: {pdf_path}")
+                return text_content, []
+
+            # Step 2: Render each PDF page to PNG
+            doc = fitz.open(pdf_path)
+            mat = fitz.Matrix(RENDER_DPI / 72, RENDER_DPI / 72)
+
+            for page_num in range(len(doc)):
+                page = doc[page_num]
+                pix = page.get_pixmap(matrix=mat, alpha=False)
+
+                slide_num = page_num + 1
+                image_id = f"{doc_hash[:8]}_{slide_num}_1"
+                image_filename = f"{image_id}.png"
+                image_path = image_dir / image_filename
+
+                pix.save(str(image_path))
+
+                width, height = pix.width, pix.height
+                placeholder = f"[IMAGE: {image_id}]"
+
+                images_metadata.append({
+                    "id": image_id,
+                    "path": str(image_path),
+                    "page": slide_num,
+                    "text_offset": 0,
+                    "text_length": len(placeholder),
+                    "position": {
+                        "width": width,
+                        "height": height,
+                        "page": slide_num,
+                        "index": 1,
+                    },
+                    "render_method": "libreoffice",
+                })
+
+            doc.close()
+
+        if not images_metadata:
+            return text_content, []
+
+        # Insert placeholders into text (same strategy as _extract_embedded_images)
+        modified_text = text_content
+        for img_meta in reversed(images_metadata):
+            slide_num = img_meta["page"]
+            placeholder = f"[IMAGE: {img_meta['id']}]"
+            caption = f"(Description: Slide {slide_num} full render)"
+            block = f"{placeholder}\n{caption}"
+
+            marker = f"## Slide {slide_num}"
+            marker_pos = modified_text.find(marker)
+            if marker_pos == -1:
+                modified_text += f"\n\n{block}"
+                continue
+            next_heading = modified_text.find("\n## Slide ", marker_pos + len(marker))
+            next_sep = modified_text.find("\n---\n", marker_pos + len(marker))
+            if next_heading == -1 and next_sep == -1:
+                insert_pos = len(modified_text)
+            elif next_heading == -1:
+                insert_pos = next_sep
+            elif next_sep == -1:
+                insert_pos = next_heading
+            else:
+                insert_pos = min(next_heading, next_sep)
+            modified_text = (
+                modified_text[:insert_pos]
+                + f"\n\n{block}"
+                + modified_text[insert_pos:]
+            )
+
+        logger.info(
+            f"Rendered {len(images_metadata)} slide images at {RENDER_DPI} DPI "
+            f"from {pptx_path}"
+        )
+        return modified_text, images_metadata
+
+    # ------------------------------------------------------------------
+    # Embedded image extraction (fallback when LibreOffice unavailable)
     # ------------------------------------------------------------------
 
     def _extract_embedded_images(

@@ -8,9 +8,47 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 from pathlib import Path
 
 from fastapi import Depends, FastAPI
+
+
+# ── Windows console close handler ────────────────────────────────
+# When user closes CMD window directly (clicks X), Windows sends
+# CTRL_CLOSE_EVENT. Python's atexit does NOT fire in this case.
+# We register a handler that flushes ChromaDB before the process dies.
+if sys.platform == "win32":
+    def _win_console_handler(event: int) -> bool:
+        """Handle Windows console events to flush ChromaDB on exit."""
+        # CTRL_CLOSE_EVENT=2, CTRL_LOGOFF_EVENT=5, CTRL_SHUTDOWN_EVENT=6
+        if event in (2, 5, 6):
+            print("[shutdown] Console close detected, flushing ChromaDB...")
+            try:
+                from api.deps import shutdown_stores
+                shutdown_stores()
+                print("[shutdown] ChromaDB flushed successfully")
+            except Exception as e:
+                print(f"[shutdown] Flush error: {e}")
+            return False  # Let default handler terminate the process
+        return False
+
+    try:
+        import win32api  # type: ignore[import-untyped]
+        win32api.SetConsoleCtrlHandler(_win_console_handler, True)
+    except ImportError:
+        # Fallback: use signal.SIGBREAK which also fires on console close
+        import signal
+        def _sigbreak_handler(signum: int, frame: object) -> None:
+            print("[shutdown] SIGBREAK received, flushing ChromaDB...")
+            try:
+                from api.deps import shutdown_stores
+                shutdown_stores()
+            except Exception:
+                pass
+            sys.exit(0)
+        signal.signal(signal.SIGBREAK, _sigbreak_handler)
+
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
@@ -57,6 +95,19 @@ app.include_router(plantuml.router, prefix="/api/plantuml", tags=["图表渲染"
 app.include_router(query.router, prefix="/api/query", tags=["测试查询"])
 app.include_router(data_manage.router, prefix="/api/data-manage", tags=["数据管理"])
 app.include_router(file_dialog.router, prefix="/api/file-dialog", tags=["文件对话框"])
+
+
+@app.on_event("startup")
+async def startup_event():
+    """Eagerly initialize ChromaStore so HNSW backup runs on startup."""
+    try:
+        from api.deps import get_hybrid_search
+        get_hybrid_search("default")
+        print("[startup] ChromaStore initialized, HNSW backup completed")
+    except Exception as e:
+        print(f"[startup] ChromaStore init failed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @app.get("/api/health")

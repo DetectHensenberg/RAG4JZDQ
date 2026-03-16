@@ -33,7 +33,7 @@ async def upload_and_ingest(
 
         settings = load_settings()
         pipeline = IngestionPipeline(settings, collection=collection)
-        result = pipeline.run(file_path=tmp_path)
+        result = pipeline.run(file_path=tmp_path, original_filename=file.filename)
 
         # Clean up temp file
         Path(tmp_path).unlink(missing_ok=True)
