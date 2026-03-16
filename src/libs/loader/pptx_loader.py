@@ -53,6 +53,8 @@ except ImportError:
 
 # DPI for rendering slides to images (300 = crisp text/tables in PNG)
 RENDER_DPI = 300
+# Maximum pixel dimension (longest side). DPI is reduced if exceeded.
+MAX_RENDER_DIM = 2000
 
 # Default prompt for Vision LLM slide understanding
 DEFAULT_SLIDE_PROMPT = (
@@ -557,10 +559,20 @@ class PptxLoader(BaseLoader):
 
             # Step 2: Render each PDF page to PNG
             doc = fitz.open(pdf_path)
-            mat = fitz.Matrix(RENDER_DPI / 72, RENDER_DPI / 72)
+            base_scale = RENDER_DPI / 72
 
             for page_num in range(len(doc)):
                 page = doc[page_num]
+
+                # Dynamically reduce DPI if page would exceed MAX_RENDER_DIM
+                rect = page.rect
+                max_side = max(rect.width * base_scale, rect.height * base_scale)
+                if max_side > MAX_RENDER_DIM:
+                    scale = MAX_RENDER_DIM / max(rect.width, rect.height)
+                    mat = fitz.Matrix(scale, scale)
+                else:
+                    mat = fitz.Matrix(base_scale, base_scale)
+
                 pix = page.get_pixmap(matrix=mat, alpha=False)
 
                 slide_num = page_num + 1
@@ -749,7 +761,7 @@ class PptxLoader(BaseLoader):
                 image_path = image_dir / filename
                 image_path.write_bytes(img_blob)
 
-                # Dimensions
+                # Dimensions + quality filter
                 width, height = 0, 0
                 if PIL_AVAILABLE:
                     try:
@@ -757,6 +769,16 @@ class PptxLoader(BaseLoader):
                         width, height = img.size
                     except Exception:
                         pass
+
+                # Skip tiny images (icons, decorations, background fragments)
+                MIN_DIM = 150
+                if width > 0 and height > 0 and (width < MIN_DIM or height < MIN_DIM):
+                    logger.debug(
+                        f"Skipping small image ({width}x{height}) on slide {slide_num}"
+                    )
+                    # Clean up the saved file
+                    image_path.unlink(missing_ok=True)
+                    return
 
                 placeholder = f"[IMAGE: {image_id}]"
                 slide_placeholders.setdefault(slide_num, []).append(placeholder)

@@ -181,124 +181,131 @@ class PdfLoader(BaseLoader):
         
         return None
     
+    # Render DPI for full-page images (150 = good balance of quality vs size)
+    RENDER_DPI = 150
+    # Maximum pixel dimension (longest side). If a page would exceed this
+    # at RENDER_DPI, the DPI is reduced proportionally for that page.
+    MAX_RENDER_DIM = 2000
+    # Minimum number of embedded images on a page to trigger rendering.
+    # Pages with 0 images are pure text and don't need a render.
+    MIN_IMAGES_FOR_RENDER = 1
+
     def _extract_and_process_images(
         self,
         pdf_path: Path,
         text_content: str,
-        doc_hash: str
+        doc_hash: str,
     ) -> tuple[str, List[Dict[str, Any]]]:
-        """Extract images from PDF and insert placeholders.
-        
-        Uses PyMuPDF to extract images, save them to disk, and insert
-        placeholders in the text content.
-        
+        """Render PDF pages as full images instead of extracting fragments.
+
+        Previous approach used ``page.get_images()`` which decomposes each page
+        into its constituent image xrefs — a single architecture diagram could
+        become dozens of tiny fragments (icons, gradients, background tiles).
+
+        New approach: render each page that contains images as a single
+        high-quality PNG via ``page.get_pixmap()``.  This produces one clean,
+        complete image per page — exactly what the user sees.
+
         Args:
             pdf_path: Path to PDF file.
             text_content: Extracted text content.
             doc_hash: Document hash for image directory.
-            
+
         Returns:
             Tuple of (modified_text, images_metadata_list)
         """
         if not self.extract_images:
             logger.debug(f"Image extraction disabled for {pdf_path}")
             return text_content, []
-        
+
         if not PYMUPDF_AVAILABLE:
             logger.warning(f"PyMuPDF not available, skipping image extraction for {pdf_path}")
             return text_content, []
-        
-        images_metadata = []
+
+        images_metadata: List[Dict[str, Any]] = []
         modified_text = text_content
-        
+
         try:
-            # Create image storage directory
             image_dir = self.image_storage_dir / doc_hash
             image_dir.mkdir(parents=True, exist_ok=True)
-            
-            # Open PDF with PyMuPDF
+
             doc = fitz.open(pdf_path)
-            
-            # Track text offset for placeholder insertion
-            text_offset = 0
-            
-            for page_num in range(len(doc)):
+            total_pages = len(doc)
+            base_scale = self.RENDER_DPI / 72
+
+            for page_num in range(total_pages):
                 page = doc[page_num]
-                image_list = page.get_images(full=True)
-                
-                for img_index, img_info in enumerate(image_list):
+
+                # Only render pages that contain visual content
+                if len(page.get_images(full=True)) < self.MIN_IMAGES_FOR_RENDER:
+                    continue
+
+                try:
+                    # Dynamically reduce DPI if page would exceed MAX_RENDER_DIM
+                    rect = page.rect
+                    max_side = max(rect.width * base_scale, rect.height * base_scale)
+                    if max_side > self.MAX_RENDER_DIM:
+                        scale = self.MAX_RENDER_DIM / max(rect.width, rect.height) / (72 / 72)
+                        mat = fitz.Matrix(scale, scale)
+                    else:
+                        mat = fitz.Matrix(base_scale, base_scale)
+
+                    pix = page.get_pixmap(matrix=mat, alpha=False)
+                    slide_num = page_num + 1
+
+                    image_id = self._generate_image_id(doc_hash, slide_num, 1)
+                    image_filename = f"{image_id}.png"
+                    image_path = image_dir / image_filename
+
+                    pix.save(str(image_path))
+
+                    width, height = pix.width, pix.height
+                    placeholder = f"[IMAGE: {image_id}]"
+
+                    # Append placeholder at end of text
+                    insert_position = len(modified_text)
+                    modified_text += f"\n{placeholder}\n"
+
                     try:
-                        # Extract image
-                        xref = img_info[0]
-                        base_image = doc.extract_image(xref)
-                        image_bytes = base_image["image"]
-                        image_ext = base_image["ext"]
-                        
-                        # Generate image ID and filename
-                        image_id = self._generate_image_id(doc_hash, page_num + 1, img_index + 1)
-                        image_filename = f"{image_id}.{image_ext}"
-                        image_path = image_dir / image_filename
-                        
-                        # Save image
-                        with open(image_path, "wb") as img_file:
-                            img_file.write(image_bytes)
-                        
-                        # Get image dimensions
-                        try:
-                            img = Image.open(io.BytesIO(image_bytes))
-                            width, height = img.size
-                        except Exception:
-                            width, height = 0, 0
-                        
-                        # Create placeholder
-                        placeholder = f"[IMAGE: {image_id}]"
-                        
-                        # Insert placeholder at end of current page's content
-                        # (simplified - in production, you'd parse page boundaries)
-                        insert_position = len(modified_text)
-                        modified_text += f"\n{placeholder}\n"
-                        
-                        # Convert path to be relative to project root or absolute
-                        try:
-                            relative_path = image_path.relative_to(Path.cwd())
-                        except ValueError:
-                            # If not in cwd, use absolute path
-                            relative_path = image_path.absolute()
-                        
-                        # Record metadata
-                        image_metadata = {
-                            "id": image_id,
-                            "path": str(relative_path),
-                            "page": page_num + 1,
-                            "text_offset": insert_position + 1,  # +1 for newline
-                            "text_length": len(placeholder),
-                            "position": {
-                                "width": width,
-                                "height": height,
-                                "page": page_num + 1,
-                                "index": img_index
-                            }
-                        }
-                        images_metadata.append(image_metadata)
-                        
-                        logger.debug(f"Extracted image {image_id} from page {page_num + 1}")
-                        
-                    except Exception as e:
-                        logger.warning(f"Failed to extract image {img_index} from page {page_num + 1}: {e}")
-                        continue
-            
+                        relative_path = image_path.relative_to(Path.cwd())
+                    except ValueError:
+                        relative_path = image_path.absolute()
+
+                    images_metadata.append({
+                        "id": image_id,
+                        "path": str(relative_path),
+                        "page": slide_num,
+                        "text_offset": insert_position + 1,
+                        "text_length": len(placeholder),
+                        "position": {
+                            "width": width,
+                            "height": height,
+                            "page": slide_num,
+                            "index": 1,
+                        },
+                        "render_method": "page_pixmap",
+                    })
+
+                    logger.debug(f"Rendered page {slide_num} as {image_id} ({width}x{height})")
+
+                except Exception as e:
+                    logger.warning(f"Failed to render page {page_num + 1}: {e}")
+                    continue
+
             doc.close()
-            
+
             if images_metadata:
-                logger.info(f"Extracted {len(images_metadata)} images from {pdf_path}")
+                logger.info(
+                    f"Rendered {len(images_metadata)} page images from {pdf_path} "
+                    f"(was {total_pages} pages, skipped text-only pages)"
+                )
             else:
-                logger.debug(f"No images found in {pdf_path}")
-            
+                logger.debug(f"No visual pages found in {pdf_path}")
+
             return modified_text, images_metadata
-            
+
         except Exception as e:
             logger.warning(f"Image extraction failed for {pdf_path}: {e}")
-            # Graceful degradation: return original text without images
             return text_content, []
     
     @staticmethod

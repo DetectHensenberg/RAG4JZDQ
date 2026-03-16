@@ -144,6 +144,7 @@ class HybridSearch:
         sparse_retriever: Optional[SparseRetriever] = None,
         fusion: Optional[RRFFusion] = None,
         config: Optional[HybridSearchConfig] = None,
+        reranker: Optional[Any] = None,
     ) -> None:
         """Initialize HybridSearch with components.
         
@@ -154,6 +155,7 @@ class HybridSearch:
             sparse_retriever: SparseRetriever for keyword search.
             fusion: RRFFusion for combining results.
             config: Optional HybridSearchConfig. If not provided, extracted from settings.
+            reranker: Optional cross-encoder reranker with .rerank(query, results) method.
         
         Note:
             At least one of dense_retriever or sparse_retriever must be provided
@@ -164,6 +166,7 @@ class HybridSearch:
         self.dense_retriever = dense_retriever
         self.sparse_retriever = sparse_retriever
         self.fusion = fusion
+        self.reranker = reranker
         
         # Extract config from settings or use provided/default
         self.config = config or self._extract_config(settings)
@@ -171,6 +174,7 @@ class HybridSearch:
         logger.info(
             f"HybridSearch initialized: dense={self.dense_retriever is not None}, "
             f"sparse={self.sparse_retriever is not None}, "
+            f"reranker={self.reranker is not None}, "
             f"config={self.config}"
         )
     
@@ -235,8 +239,10 @@ class HybridSearch:
             raise ValueError("Query cannot be empty or whitespace-only")
         
         effective_top_k = top_k if top_k is not None else self.config.fusion_top_k
+        # When reranker is available, retrieve more candidates for it to rerank
+        fusion_top_k = effective_top_k * 3 if self.reranker is not None else effective_top_k
         
-        logger.debug(f"HybridSearch: query='{query[:50]}...', top_k={effective_top_k}")
+        logger.debug(f"HybridSearch: query='{query[:50]}...', top_k={effective_top_k}, fusion_k={fusion_top_k}")
         
         # Step 1: Process query
         _t0 = time.monotonic()
@@ -285,13 +291,43 @@ class HybridSearch:
             fused_results = self._fuse_results(
                 dense_results=dense_results or [],
                 sparse_results=sparse_results or [],
-                top_k=effective_top_k,
+                top_k=fusion_top_k,
                 trace=trace,
             )
         
         # Step 5: Apply post-fusion metadata filters (if any)
         if merged_filters and self.config.metadata_filter_post:
             fused_results = self._apply_metadata_filters(fused_results, merged_filters)
+        
+        # Step 5.3: Filename boost — nudge chunks whose source filename
+        #           contains query keywords so they enter the reranker pool.
+        fused_results = self._apply_filename_boost(fused_results, query)
+        
+        # Snapshot all candidates before reranking trims the list
+        all_candidates = list(fused_results)
+        
+        # Step 5.5: Rerank with cross-encoder if available
+        if self.reranker is not None and fused_results:
+            # Request 2x top_k so source diversification has enough candidates
+            rerank_top_k = effective_top_k * 2
+            rerank_result = self.reranker.rerank(query, fused_results, top_k=rerank_top_k)
+            fused_results = rerank_result.results
+            logger.info(
+                f"Reranked {len(fused_results)} results "
+                f"(fallback={rerank_result.used_fallback}, type={rerank_result.reranker_type})"
+            )
+        
+        # Step 5.7: Source diversification — limit chunks per source document
+        #           so results cover different files, not just one big doc.
+        fused_results = self._diversify_by_source(
+            fused_results, max_per_source=2,
+        )
+        
+        # Step 5.9: Title match guarantee — if a document whose filename
+        #           matches the query isn't in results yet, inject its best chunk.
+        fused_results = self._inject_title_matches(
+            fused_results, all_candidates, query,
+        )
         
         # Step 6: Limit to top_k
         final_results = fused_results[:effective_top_k]
@@ -674,6 +710,146 @@ class HybridSearch:
         
         return interleaved
     
+    def _inject_title_matches(
+        self,
+        results: List[RetrievalResult],
+        all_candidates: List[RetrievalResult],
+        query: str,
+    ) -> List[RetrievalResult]:
+        """Guarantee that documents whose filename matches the query appear.
+
+        If a candidate's source filename contains query keywords but no chunk
+        from that source is already in ``results``, inject the highest-scored
+        chunk from ``all_candidates``.
+
+        Args:
+            results: Current result list (post-diversification).
+            all_candidates: Full candidate pool (pre-rerank).
+            query: Original user query.
+
+        Returns:
+            Results with title-matching chunks injected (appended at end).
+        """
+        if not all_candidates or not query:
+            return results
+
+        keywords = [w for w in query.strip().split() if len(w) >= 2]
+        if not keywords:
+            keywords = [query.strip()]
+
+        # Sources already in results
+        existing_sources = {r.metadata.get("source_path", "") for r in results}
+
+        # Find title-matching candidates NOT in results
+        injected = []
+        seen_sources: set[str] = set()
+        for r in all_candidates:
+            source = r.metadata.get("source_path", "")
+            if source in existing_sources or source in seen_sources:
+                continue
+            fname = source.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if source else ""
+            stem = fname.rsplit(".", 1)[0] if "." in fname else fname
+            if any(kw in stem for kw in keywords):
+                injected.append(r)
+                seen_sources.add(source)
+
+        if injected:
+            sources = [r.metadata.get("source_path", "").rsplit("\\", 1)[-1] for r in injected]
+            logger.info(f"Title match guarantee: injected {len(injected)} chunk(s) from {sources}")
+
+        return list(results) + injected
+
+    def _diversify_by_source(
+        self,
+        results: List[RetrievalResult],
+        max_per_source: int = 3,
+    ) -> List[RetrievalResult]:
+        """Limit chunks per source document to ensure result diversity.
+
+        Iterates through results in score order, keeping at most
+        ``max_per_source`` chunks from each source file.
+
+        Args:
+            results: Scored results (descending by score).
+            max_per_source: Maximum chunks to keep per source document.
+
+        Returns:
+            Diversified results preserving original score order.
+        """
+        if not results or max_per_source <= 0:
+            return results
+
+        source_counts: Dict[str, int] = {}
+        diversified: List[RetrievalResult] = []
+
+        for r in results:
+            source = r.metadata.get("source_path", "")
+            count = source_counts.get(source, 0)
+            if count < max_per_source:
+                diversified.append(r)
+                source_counts[source] = count + 1
+
+        if len(diversified) < len(results):
+            logger.debug(
+                f"Source diversification: {len(results)} -> {len(diversified)} "
+                f"(max {max_per_source}/source)"
+            )
+
+        return diversified
+
+    def _apply_filename_boost(
+        self,
+        results: List[RetrievalResult],
+        query: str,
+        boost_factor: float = 1.5,
+    ) -> List[RetrievalResult]:
+        """Boost scores for chunks whose source filename contains query keywords.
+
+        Ensures documents whose title directly matches the query topic rank
+        higher and enter the reranker candidate pool.
+
+        Args:
+            results: Fused results to boost.
+            query: Original user query string.
+            boost_factor: Score multiplier for matching chunks (default: 1.5).
+
+        Returns:
+            Re-sorted results with filename-matching chunks boosted.
+        """
+        if not results or not query:
+            return results
+
+        # Build keyword set: split query into 2+ char segments
+        keywords = [w for w in query.strip().split() if len(w) >= 2]
+        if not keywords:
+            keywords = [query.strip()]
+
+        boosted = []
+        boosted_count = 0
+        for r in results:
+            source = r.metadata.get("source_path", "")
+            filename = source.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if source else ""
+            # Strip extension for matching
+            fname_stem = filename.rsplit(".", 1)[0] if "." in filename else filename
+
+            matched = any(kw in fname_stem for kw in keywords)
+            if matched:
+                boosted.append(RetrievalResult(
+                    chunk_id=r.chunk_id,
+                    score=r.score * boost_factor,
+                    text=r.text,
+                    metadata={**r.metadata, "filename_boosted": True},
+                ))
+                boosted_count += 1
+            else:
+                boosted.append(r)
+
+        if boosted_count > 0:
+            boosted.sort(key=lambda x: (-x.score, x.chunk_id))
+            logger.info(f"Filename boost: {boosted_count} chunks boosted for query '{query[:30]}'")
+
+        return boosted
+
     def _apply_metadata_filters(
         self,
         results: List[RetrievalResult],

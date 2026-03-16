@@ -57,9 +57,9 @@ retrieval:
 # Rerank Configuration
 # =============================================================================
 rerank:
-  enabled: false
-  provider: "none"  # Options: none, cross_encoder, llm
-  model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  enabled: true
+  provider: "cross_encoder"  # Options: none, cross_encoder, llm
+  model: "BAAI/bge-reranker-base"  # Fast on CPU, excellent Chinese support
   top_k: 5
 
 # =============================================================================

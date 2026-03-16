@@ -45,6 +45,7 @@ def get_hybrid_search(collection: str = "default") -> Any:
     from src.core.query_engine.query_processor import QueryProcessor
     from src.core.query_engine.fusion import RRFFusion
     from src.core.query_engine.hybrid_search import HybridSearch
+    from src.core.query_engine.reranker import CoreReranker
 
     embedding = EmbeddingFactory.create(settings)
     vector_store = VectorStoreFactory.create(settings, collection_name=collection)
@@ -57,12 +58,22 @@ def get_hybrid_search(collection: str = "default") -> Any:
     query_processor = QueryProcessor()
     fusion = RRFFusion()
 
+    # Create reranker (gracefully falls back to NoneReranker if disabled/failed)
+    reranker: CoreReranker | None = None
+    try:
+        reranker = CoreReranker(settings)
+        if not reranker.is_enabled:
+            reranker = None
+    except Exception as e:
+        logger.warning(f"Reranker init failed, proceeding without: {e}")
+
     _hybrid_search = HybridSearch(
         settings=settings,
         query_processor=query_processor,
         dense_retriever=dense_retriever,
         sparse_retriever=sparse_retriever,
         fusion=fusion,
+        reranker=reranker,
     )
     _hybrid_collection = collection
     logger.info(f"HybridSearch initialized for collection '{collection}'")

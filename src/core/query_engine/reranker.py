@@ -165,8 +165,16 @@ class CoreReranker:
         else:
             return class_name.lower()
     
+    # Max characters sent to cross-encoder per candidate.
+    # Longer text slows scoring significantly on CPU.
+    RERANK_MAX_TEXT_LEN = 256
+
     def _results_to_candidates(self, results: List[RetrievalResult]) -> List[Dict[str, Any]]:
         """Convert RetrievalResults to reranker candidate format.
+
+        Prepends source filename to chunk text so the cross-encoder can
+        use the document title as a relevance signal.  Text is truncated
+        to ``RERANK_MAX_TEXT_LEN`` characters for faster scoring on CPU.
         
         Args:
             results: List of RetrievalResult objects.
@@ -176,9 +184,18 @@ class CoreReranker:
         """
         candidates = []
         for result in results:
+            # Extract filename stem (without path and extension)
+            source = result.metadata.get("source_path", "")
+            fname = source.rsplit("/", 1)[-1].rsplit("\\", 1)[-1] if source else ""
+            stem = fname.rsplit(".", 1)[0] if "." in fname else fname
+
+            # Prepend filename + truncate for speed
+            text = f"[{stem}] {result.text}" if stem else result.text
+            text = text[: self.RERANK_MAX_TEXT_LEN]
+
             candidates.append({
                 "id": result.chunk_id,
-                "text": result.text,
+                "text": text,
                 "score": result.score,
                 "metadata": result.metadata.copy(),
             })

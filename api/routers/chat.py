@@ -7,6 +7,7 @@ import logging
 import re
 import sqlite3
 import time
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Dict, List
 
@@ -21,11 +22,13 @@ from src.core.response.multimodal_assembler import MultimodalAssembler
 from src.ingestion.storage.image_storage import ImageStorage
 
 
+@lru_cache(maxsize=512)
 def _is_background_image(img_path: str, min_edge: float = 8.0, min_dim: int = 150) -> bool:
     """Return True if the image looks like a PPT background / decoration.
 
     Uses gradient-based edge strength: real content (tables, diagrams, text)
     has edge > 8, while gradients and solid backgrounds have edge < 5.
+    Results are cached (LRU) to avoid repeated PIL/numpy computation.
     """
     try:
         from PIL import Image
@@ -162,9 +165,12 @@ def _strip_background_images(text: str, collection: str = "default") -> str:
         img_id = m.group(1).strip()
         img_path = image_storage.get_image_path(img_id)
         if not img_path:
+            logger.debug(f"[ctx-filter] {img_id}: path not found, keeping")
             return m.group(0)
         if _is_background_image(img_path):
+            logger.debug(f"[ctx-filter] {img_id}: background, stripping")
             return ""  # strip background image reference
+        logger.debug(f"[ctx-filter] {img_id}: OK, keeping")
         return m.group(0)  # keep it
 
     # Match [IMAGE: id] optionally followed by (Description: ...) on next line
@@ -182,7 +188,7 @@ def _build_context(results: list, max_chars: int = 8000) -> str:
     for i, r in enumerate(results):
         source = r.metadata.get("source_path", "未知来源")
         source_name = Path(source).name if source != "未知来源" else source
-        text = _strip_background_images(r.text)
+        text = r.text  # Keep all [IMAGE: xxx] refs so LLM can reference them;
         remaining = max_chars - total
         if remaining <= 0:
             break
@@ -246,79 +252,26 @@ async def chat_stream(req: ChatRequest):
         images: List[Dict[str, Any]] = []
         context = ""
 
-        # Step 1: Retrieve
+        # Step 1: Retrieve — then immediately send references so frontend
+        #         shows them while LLM streams.
         try:
+            t0 = time.perf_counter()
             search = get_hybrid_search(req.collection)
             results = search.search(query=question, top_k=req.top_k)
+            t_retrieve = time.perf_counter() - t0
+            logger.info(f"[perf] retrieval: {t_retrieve:.2f}s")
             references = [
                 {"source": r.metadata.get("source_path", "未知"), "score": round(r.score, 4), "text": r.text[:200]}
                 for r in results
             ]
             context = _build_context(results)
-            
-            # Extract images from retrieval results with relevance scoring
-            try:
-                image_storage = ImageStorage()
-                assembler = MultimodalAssembler(image_storage)
-                
-                MIN_IMAGE_SIZE = 10_000  # Skip images < 10KB (icons, color blocks)
-                MAX_GALLERY_IMAGES = 6
-                
-                scored_images = []
-                total_results = len(results)
-                for rank, r in enumerate(results):
-                    chunk_score = r.score
-                    img_refs = assembler.extract_image_refs(r)
-                    for ref in img_refs:
-                        img_path = assembler.resolve_image_path(ref, req.collection)
-                        if img_path:
-                            # Skip tiny images
-                            try:
-                                file_size = Path(img_path).stat().st_size
-                                if file_size < MIN_IMAGE_SIZE:
-                                    continue
-                            except OSError:
-                                continue
-                            # Skip PPT backgrounds / gradients (low edge content)
-                            if _is_background_image(img_path):
-                                continue
-                            
-                            # Calculate relevance score
-                            relevance = _calculate_image_relevance(
-                                question, ref.caption, chunk_score,
-                                rank=rank, total_results=total_results,
-                            )
-                            
-                            # Only include images above threshold
-                            if relevance >= IMAGE_RELEVANCE_THRESHOLD:
-                                scored_images.append({
-                                    "image_id": ref.image_id,
-                                    "path": img_path,
-                                    "caption": ref.caption,
-                                    "source": r.metadata.get("source_path", ""),
-                                    "relevance": round(relevance, 3),
-                                    "chunk_score": round(chunk_score, 3),
-                                })
-                
-                # Sort by relevance (highest first), cap at MAX_GALLERY_IMAGES
-                images = sorted(scored_images, key=lambda x: x["relevance"], reverse=True)[:MAX_GALLERY_IMAGES]
-                
-                if images:
-                    logger.info(f"Found {len(images)} relevant images (threshold={IMAGE_RELEVANCE_THRESHOLD})")
-            except Exception as e:
-                logger.warning(f"Failed to extract images: {e}")
-            
             yield f"data: {json.dumps({'type': 'references', 'data': references}, ensure_ascii=False)}\n\n"
-            
-            # Send images if any
-            if images:
-                yield f"data: {json.dumps({'type': 'images', 'data': images}, ensure_ascii=False)}\n\n"
         except Exception as e:
             logger.exception("Retrieval failed")
             yield f"data: {json.dumps({'type': 'error', 'message': f'检索失败: {e}'}, ensure_ascii=False)}\n\n"
             return
 
-        # Step 2: Build messages
+        # Step 2: Build messages + stream LLM immediately (no gallery delay)
         messages = [Message(role="system", content=SYSTEM_PROMPT)]
         if context:
             messages.append(Message(role="user", content=f"参考资料:\n{context}\n\n问题: {question}"))
@@ -327,19 +280,20 @@ async def chat_stream(req: ChatRequest):
         else:
             messages.append(Message(role="user", content=question))
 
-        # Step 3: Stream LLM
         full_answer = ""
         try:
+            t1 = time.perf_counter()
             llm = get_llm()
             for chunk in llm.chat_stream(messages, max_tokens=req.max_tokens):
                 full_answer += chunk
                 yield f"data: {json.dumps({'type': 'token', 'content': chunk}, ensure_ascii=False)}\n\n"
+            logger.info(f"[perf] LLM stream: {time.perf_counter()-t1:.2f}s")
         except Exception as e:
             logger.exception("LLM generation failed")
             yield f"data: {json.dumps({'type': 'error', 'message': f'生成失败: {e}'}, ensure_ascii=False)}\n\n"
             return
 
-        # Step 4: Sanitize — strip hallucinated IDs + background images
+        # Step 3: Sanitize answer — strip hallucinated IDs + background images
         def _strip_bad_images(text: str) -> str:
             _img_storage = ImageStorage()
             def _replacer(m: re.Match) -> str:
@@ -356,10 +310,54 @@ async def chat_stream(req: ChatRequest):
 
         full_answer = _strip_bad_images(full_answer)
 
+        # Step 4: Gallery extraction (AFTER LLM, so it doesn't delay first token)
+        try:
+            t2 = time.perf_counter()
+            image_storage = ImageStorage()
+            assembler = MultimodalAssembler(image_storage)
+            MIN_IMAGE_SIZE = 10_000
+            MAX_GALLERY_IMAGES = 6
+            scored_images = []
+            total_results = len(results)
+            for rank, r in enumerate(results):
+                for ref in assembler.extract_image_refs(r):
+                    img_path = assembler.resolve_image_path(ref, req.collection)
+                    if not img_path:
+                        continue
+                    try:
+                        file_size = Path(img_path).stat().st_size
+                        if file_size < MIN_IMAGE_SIZE:
+                            continue
+                    except OSError:
+                        continue
+                    if _is_background_image(img_path):
+                        continue
+                    relevance = _calculate_image_relevance(
+                        question, ref.caption, r.score,
+                        rank=rank, total_results=total_results,
+                    )
+                    if relevance >= IMAGE_RELEVANCE_THRESHOLD:
+                        scored_images.append({
+                            "image_id": ref.image_id,
+                            "path": img_path,
+                            "caption": ref.caption,
+                            "source": r.metadata.get("source_path", ""),
+                            "relevance": round(relevance, 3),
+                            "chunk_score": round(r.score, 3),
+                        })
+            images = sorted(scored_images, key=lambda x: x["relevance"], reverse=True)[:MAX_GALLERY_IMAGES]
+            logger.info(f"[perf] gallery: {time.perf_counter()-t2:.2f}s ({len(images)} imgs)")
+        except Exception as e:
+            logger.warning(f"Failed to extract images: {e}")
+
+        if images:
+            yield f"data: {json.dumps({'type': 'images', 'data': images}, ensure_ascii=False)}\n\n"
+
         yield f"data: {json.dumps({'type': 'done', 'answer': full_answer}, ensure_ascii=False)}\n\n"
 
         # Save to history
         _save_history(question, full_answer, references)
+        logger.info(f"[perf] total: {time.perf_counter()-t0:.2f}s")
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 
