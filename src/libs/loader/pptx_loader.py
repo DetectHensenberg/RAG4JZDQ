@@ -22,6 +22,7 @@ import hashlib
 import io
 import logging
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -78,13 +79,23 @@ def _check_libreoffice() -> Optional[str]:
         r"C:\Program Files\LibreOffice\program\soffice.exe",
         r"C:\Program Files (x86)\LibreOffice\program\soffice.exe",
     ]
+    kwargs: dict = {}
+    if sys.platform == "win32":
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        kwargs["startupinfo"] = si
+        kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
     for cmd in candidates:
         try:
             result = subprocess.run(
                 [cmd, "--version"],
-                capture_output=True,
+                input="\n",
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
                 text=True,
                 timeout=10,
+                **kwargs,
             )
             if result.returncode == 0:
                 logger.info(f"LibreOffice found: {cmd}")
@@ -139,6 +150,42 @@ class PptxLoader(BaseLoader):
         self.vision_llm = vision_llm
         self.slide_prompt = slide_prompt or DEFAULT_SLIDE_PROMPT
         self._libreoffice_cmd = _check_libreoffice()
+
+    # ------------------------------------------------------------------
+    # LibreOffice subprocess helpers
+    # ------------------------------------------------------------------
+
+    def _lo_cmd_args(
+        self, lo_profile: Path, outdir: str, pptx_path: Path
+    ) -> list:
+        """Build LibreOffice command-line arguments."""
+        return [
+            self._libreoffice_cmd,
+            "--headless",
+            "--invisible",
+            "--nocrashreport",
+            "--nodefault",
+            "--nofirststartwizard",
+            "--nologo",
+            "--norestore",
+            f"-env:UserInstallation=file:///{lo_profile.as_posix()}",
+            "--convert-to", "pdf",
+            "--outdir", outdir,
+            str(pptx_path),
+        ]
+
+    @staticmethod
+    def _lo_platform_kwargs() -> dict:
+        """Return platform-specific subprocess kwargs to hide LibreOffice window."""
+        if sys.platform != "win32":
+            return {}
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        return {
+            "startupinfo": si,
+            "creationflags": subprocess.CREATE_NO_WINDOW,
+        }
 
     # ------------------------------------------------------------------
     # BaseLoader interface
@@ -353,18 +400,17 @@ class PptxLoader(BaseLoader):
         with tempfile.TemporaryDirectory() as tmpdir:
             logger.info(f"Converting PPTX to PDF via LibreOffice: {pptx_path}")
             try:
+                lo_profile = Path(tmpdir) / "lo_profile"
+                lo_profile.mkdir(exist_ok=True)
                 subprocess.run(
-                    [
-                        self._libreoffice_cmd,
-                        "--headless",
-                        "--convert-to", "pdf",
-                        "--outdir", tmpdir,
-                        str(pptx_path),
-                    ],
-                    capture_output=True,
+                    self._lo_cmd_args(lo_profile, tmpdir, pptx_path),
+                    input="\n",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     text=True,
                     timeout=120,
                     check=True,
+                    **self._lo_platform_kwargs(),
                 )
             except subprocess.CalledProcessError as e:
                 raise RuntimeError(
@@ -485,18 +531,17 @@ class PptxLoader(BaseLoader):
             # Step 1: PPTX → PDF via LibreOffice
             logger.info(f"Rendering slides via LibreOffice: {pptx_path}")
             try:
+                lo_profile = Path(tmpdir) / "lo_profile"
+                lo_profile.mkdir(exist_ok=True)
                 subprocess.run(
-                    [
-                        self._libreoffice_cmd,
-                        "--headless",
-                        "--convert-to", "pdf",
-                        "--outdir", tmpdir,
-                        str(pptx_path),
-                    ],
-                    capture_output=True,
+                    self._lo_cmd_args(lo_profile, tmpdir, pptx_path),
+                    input="\n",
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     text=True,
                     timeout=120,
                     check=True,
+                    **self._lo_platform_kwargs(),
                 )
             except subprocess.CalledProcessError as e:
                 logger.warning(f"LibreOffice conversion failed: {e.stderr}")

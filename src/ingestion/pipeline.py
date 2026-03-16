@@ -121,7 +121,8 @@ class IngestionPipeline:
         self,
         settings: Settings,
         collection: str = "default",
-        force: bool = False
+        force: bool = False,
+        skip_llm_transform: bool = False,
     ):
         """Initialize pipeline with all components.
         
@@ -129,10 +130,14 @@ class IngestionPipeline:
             settings: Application settings from settings.yaml
             collection: Collection name for organizing documents
             force: If True, re-process even if file was previously processed
+            skip_llm_transform: If True, skip LLM-based ChunkRefiner,
+                MetadataEnricher and ImageCaptioner. Useful for bulk
+                re-ingestion where only image extraction changed.
         """
         self.settings = settings
         self.collection = collection
         self.force = force
+        self.skip_llm_transform = skip_llm_transform
         
         # Initialize all components
         logger.info("Initializing Ingestion Pipeline components...")
@@ -320,6 +325,14 @@ class IngestionPipeline:
             stages["integrity"] = {"file_hash": file_hash, "skipped": False}
             logger.info("  ✓ File needs processing")
             
+            # When force=True, delete old chunks for this source_path so
+            # content-hash-based IDs don't create orphan duplicates.
+            if self.force:
+                src_path = original_filename or str(file_path)
+                deleted = self.vector_upserter.delete_by_source_path(src_path)
+                if deleted:
+                    logger.info(f"  🗑️  Deleted {deleted} old chunks for re-ingestion")
+            
             # ─────────────────────────────────────────────────────────────
             # Stage 2: Document Loading
             # ─────────────────────────────────────────────────────────────
@@ -397,27 +410,37 @@ class IngestionPipeline:
             _notify("transform", 4)
             
             # 4a: Chunk Refinement
-            logger.info("  4a. Chunk Refinement...")
             _t0_transform = time.monotonic()
-            # snapshot before refinement
             _pre_refine_texts = {c.id: c.text for c in chunks}
-            chunks = self.chunk_refiner.transform(chunks, trace)
-            refined_by_llm = sum(1 for c in chunks if c.metadata.get("refined_by") == "llm")
-            refined_by_rule = sum(1 for c in chunks if c.metadata.get("refined_by") == "rule")
-            logger.info(f"      LLM refined: {refined_by_llm}, Rule refined: {refined_by_rule}")
-            
-            # 4b: Metadata Enrichment
-            logger.info("  4b. Metadata Enrichment...")
-            chunks = self.metadata_enricher.transform(chunks, trace)
-            enriched_by_llm = sum(1 for c in chunks if c.metadata.get("enriched_by") == "llm")
-            enriched_by_rule = sum(1 for c in chunks if c.metadata.get("enriched_by") == "rule")
-            logger.info(f"      LLM enriched: {enriched_by_llm}, Rule enriched: {enriched_by_rule}")
-            
-            # 4c: Image Captioning
-            logger.info("  4c. Image Captioning...")
-            chunks = self.image_captioner.transform(chunks, trace)
-            captioned = sum(1 for c in chunks if c.metadata.get("image_captions"))
-            logger.info(f"      Chunks with captions: {captioned}")
+            refined_by_llm = refined_by_rule = 0
+            enriched_by_llm = enriched_by_rule = 0
+            captioned = 0
+
+            if self.skip_llm_transform:
+                logger.info("  ⏩ Skipping LLM transforms (skip_llm_transform=True)")
+                # Still apply rule-based refinement (fast, no API calls)
+                chunks = self.chunk_refiner.transform(chunks, trace)
+                refined_by_rule = sum(1 for c in chunks if c.metadata.get("refined_by") == "rule")
+                logger.info(f"      Rule refined: {refined_by_rule}")
+            else:
+                logger.info("  4a. Chunk Refinement...")
+                chunks = self.chunk_refiner.transform(chunks, trace)
+                refined_by_llm = sum(1 for c in chunks if c.metadata.get("refined_by") == "llm")
+                refined_by_rule = sum(1 for c in chunks if c.metadata.get("refined_by") == "rule")
+                logger.info(f"      LLM refined: {refined_by_llm}, Rule refined: {refined_by_rule}")
+                
+                # 4b: Metadata Enrichment
+                logger.info("  4b. Metadata Enrichment...")
+                chunks = self.metadata_enricher.transform(chunks, trace)
+                enriched_by_llm = sum(1 for c in chunks if c.metadata.get("enriched_by") == "llm")
+                enriched_by_rule = sum(1 for c in chunks if c.metadata.get("enriched_by") == "rule")
+                logger.info(f"      LLM enriched: {enriched_by_llm}, Rule enriched: {enriched_by_rule}")
+                
+                # 4c: Image Captioning
+                logger.info("  4c. Image Captioning...")
+                chunks = self.image_captioner.transform(chunks, trace)
+                captioned = sum(1 for c in chunks if c.metadata.get("image_captions"))
+                logger.info(f"      Chunks with captions: {captioned}")
             
             stages["transform"] = {
                 "chunk_refiner": {"llm": refined_by_llm, "rule": refined_by_rule},

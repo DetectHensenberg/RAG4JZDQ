@@ -40,15 +40,15 @@ let mermaidPlaceholderId = 0
  */
 export function renderMarkdown(text: string): string {
   // Pre-process: convert image reference placeholders to inline images
-  // Matches [IMAGE: id], [id] where id looks like a hex image reference (e.g. fdb32762_s2_1)
+  // Matches [IMAGE: id] where id is like fdb32762_s2_1 (old) or fdb32762_2_1 (new)
   text = text.replace(
-    /\[IMAGE:\s*([a-f0-9_]+(?:_s\d+_\d+)?)\]/gi,
-    '<img src="/api/data/images/$1/raw" alt="$1" class="inline-ref-img" />'
+    /\[IMAGE:\s*([a-f0-9_]+(?:_s?\d+_\d+)?)\]/gi,
+    '<img src="/api/data/images/$1/raw" alt="$1" class="inline-ref-img" onerror="this.style.display=\'none\'" />'
   )
   // Also match bare [hex_id] patterns that look like image refs (8+ hex chars with underscores)
   text = text.replace(
-    /\[([a-f0-9]{6,}_s\d+_\d+)\]/gi,
-    '<img src="/api/data/images/$1/raw" alt="$1" class="inline-ref-img" />'
+    /\[([a-f0-9]{6,}_s?\d+_\d+)\]/gi,
+    '<img src="/api/data/images/$1/raw" alt="$1" class="inline-ref-img" onerror="this.style.display=\'none\'" />'
   )
 
   // Pre-process: wrap bare @startuml...@enduml blocks in ```plantuml fences

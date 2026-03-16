@@ -317,9 +317,8 @@ class BM25Indexer:
     ) -> None:
         """Incrementally add documents to the BM25 index.
 
-        Loads the existing index (if any), optionally removes old postings
-        for the given *doc_id* (to support re-ingestion), merges the new
-        term stats, recomputes IDF scores, and saves.
+        Directly inserts new postings and updates IDF scores without
+        reconstructing the entire index. Much faster than full rebuild.
 
         Args:
             term_stats: New term statistics from SparseEncoder.encode().
@@ -336,30 +335,83 @@ class BM25Indexer:
 
         # Load existing index (ignore if missing – will start fresh)
         if not self._index:
-            self.load(collection)
+            if not self.load(collection):
+                # No existing index — just build from scratch
+                self.build(term_stats, collection, trace)
+                return
 
         # Remove stale postings for this document (re-ingest case)
         if doc_id and self._index:
-            self.remove_document(doc_id, collection)
+            self._remove_postings_by_prefix(doc_id)
 
-        # Reconstruct existing term_stats from current index postings
-        existing_stats: Dict[str, Dict[str, Any]] = {}  # chunk_id -> stat
+        # Collect new chunk_ids for duplicate prevention
+        new_chunk_ids = {s["chunk_id"] for s in term_stats}
+
+        # Track which existing terms gain new postings (need IDF recalc)
+        affected_terms: set = set()
+
+        # Insert new postings directly into existing index
+        for stat in term_stats:
+            cid = stat["chunk_id"]
+            doc_length = stat["doc_length"]
+            for term, tf in stat["term_frequencies"].items():
+                if tf <= 0:
+                    continue
+                if term not in self._index:
+                    self._index[term] = {"idf": 0.0, "df": 0, "postings": []}
+                self._index[term]["postings"].append({
+                    "chunk_id": cid,
+                    "tf": tf,
+                    "doc_length": doc_length,
+                })
+                affected_terms.add(term)
+
+        # Recalculate metadata
+        all_chunk_ids: set = set()
+        total_length = 0
+        for term_data in self._index.values():
+            for p in term_data["postings"]:
+                if p["chunk_id"] not in all_chunk_ids:
+                    total_length += p["doc_length"]
+                    all_chunk_ids.add(p["chunk_id"])
+
+        num_docs = len(all_chunk_ids)
+        avg_doc_length = total_length / num_docs if num_docs else 0.0
+
+        # Update DF and IDF only for affected terms
+        for term in affected_terms:
+            td = self._index[term]
+            td["df"] = len(td["postings"])
+            td["idf"] = self._calculate_idf(num_docs, td["df"])
+
+        # Also update IDF for all other terms since num_docs changed
+        for term, td in self._index.items():
+            if term not in affected_terms:
+                td["idf"] = self._calculate_idf(num_docs, td["df"])
+
+        self._metadata = {
+            "num_docs": num_docs,
+            "avg_doc_length": avg_doc_length,
+            "total_terms": len(self._index),
+            "collection": collection,
+        }
+
+        self._save(collection)
+
+    def _remove_postings_by_prefix(self, prefix: str) -> None:
+        """Remove postings whose chunk_id starts with prefix (in-place)."""
+        terms_to_delete: list = []
         for term, term_data in self._index.items():
-            for posting in term_data["postings"]:
-                cid = posting["chunk_id"]
-                if cid not in existing_stats:
-                    existing_stats[cid] = {
-                        "chunk_id": cid,
-                        "term_frequencies": {},
-                        "doc_length": posting["doc_length"],
-                    }
-                existing_stats[cid]["term_frequencies"][term] = posting["tf"]
-
-        # Merge: existing + new
-        combined = list(existing_stats.values()) + list(term_stats)
-
-        # Rebuild full index from combined stats
-        self.build(combined, collection, trace)
+            term_data["postings"] = [
+                p for p in term_data["postings"]
+                if not p["chunk_id"].startswith(prefix)
+            ]
+            if not term_data["postings"]:
+                terms_to_delete.append(term)
+            else:
+                term_data["df"] = len(term_data["postings"])
+        for term in terms_to_delete:
+            del self._index[term]
 
     def remove_document(
         self,
@@ -443,9 +495,9 @@ class BM25Indexer:
             df: Document frequency (number of docs containing term)
         
         Returns:
-            IDF score (can be negative for very common terms)
+            IDF score (always >= 0 with the +1 variant)
         """
-        return math.log((num_docs - df + 0.5) / (df + 0.5))
+        return math.log(1.0 + (num_docs - df + 0.5) / (df + 0.5))
     
     def _calculate_bm25_score(
         self,
@@ -536,7 +588,7 @@ class BM25Indexer:
         temp_path = index_path.with_suffix('.tmp')
         try:
             with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, indent=2, ensure_ascii=False)
+                json.dump(data, f, ensure_ascii=False, separators=(',', ':'))
             
             # Atomic rename
             temp_path.replace(index_path)

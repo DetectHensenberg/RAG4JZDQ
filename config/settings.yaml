@@ -7,8 +7,8 @@
 # =============================================================================
 llm:
   provider: "openai"  # Using DashScope OpenAI-compatible API for Qwen
-  model: "qwen-plus"
-  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: "qwen3.5-plus"
+  base_url: "https://coding.dashscope.aliyuncs.com/v1"
   api_key: ""  # 从环境变量 DASHSCOPE_API_KEY 自动读取
   temperature: 0.0
   max_tokens: 4096
@@ -22,7 +22,7 @@ embedding:
   model: "text-embedding-v3"
   dimensions: 1024  # DashScope text-embedding-v3 默认 1024 维
   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  api_key: ""  # 从环境变量 DASHSCOPE_API_KEY 自动读取
+  api_key: "sk-02c170ed9467429f8834a3f743b4f215"  # coding endpoint 不支持 embedding，用常规 key
 
 # =============================================================================
 # Vision LLM Configuration (for Image Captioning)
@@ -30,8 +30,8 @@ embedding:
 vision_llm:
   enabled: true  # Enable vision capabilities for scanned PDF/PPTX processing
   provider: "openai"  # Using DashScope OpenAI-compatible API for Qwen VL
-  model: "qwen-vl-plus"  # Qwen 视觉模型
-  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  model: "qwen3.5-plus"  # qwen3.5-plus 原生支持视觉理解
+  base_url: "https://coding.dashscope.aliyuncs.com/v1"
   api_key: ""  # 从环境变量 DASHSCOPE_API_KEY 自动读取
   max_image_size: 2048  # Max dimension (width/height) for image compression
   proxy: ""  # 本地代理，留空则不使用代理

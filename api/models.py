@@ -34,6 +34,8 @@ class IngestRequest(BaseModel):
     folder_path: str
     collection: str = "default"
     file_types: List[str] = [".pdf", ".pptx", ".docx", ".md", ".txt"]
+    force: bool = False
+    skip_llm_transform: bool = False
 
 
 class ConfigUpdateRequest(BaseModel):

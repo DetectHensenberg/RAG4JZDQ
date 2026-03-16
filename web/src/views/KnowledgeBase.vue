@@ -47,6 +47,10 @@
             <span>{{ scanning ? '扫描中...' : '扫描' }}</span>
           </button>
         </div>
+        <div class="config-row config-row-options">
+          <el-checkbox v-model="forceReingest" :disabled="ingesting" label="强制重入库 (覆盖已有文件)" />
+          <el-checkbox v-model="skipLlm" :disabled="ingesting" label="跳过 LLM 优化 (加速批量入库)" />
+        </div>
       </div>
     </section>
 
@@ -171,6 +175,8 @@ import api from '@/composables/useApi'
 
 const folderPath = ref('')
 const collection = ref('default')
+const forceReingest = ref(false)
+const skipLlm = ref(false)
 const files = ref<any[]>([])
 const scanning = ref(false)
 const ingesting = ref(false)
@@ -236,6 +242,8 @@ async function startIngest() {
     const { data } = await api.post('/knowledge/ingest', {
       folder_path: folderPath.value,
       collection: collection.value,
+      force: forceReingest.value,
+      skip_llm_transform: skipLlm.value,
     })
     if (!data.ok) { ElMessage.error(data.message); ingesting.value = false; return }
     taskId.value = data.data.task_id
@@ -329,6 +337,12 @@ async function stopIngest() {
   display: flex;
   align-items: flex-end;
   gap: var(--sp-4);
+}
+
+.config-row-options {
+  align-items: center;
+  padding-top: var(--sp-3);
+  gap: var(--sp-6);
 }
 
 .config-field {

@@ -167,6 +167,32 @@ class VectorUpserter:
         
         return chunk_id
     
+    def delete_by_source_path(self, source_path: str) -> int:
+        """Delete all chunks with the given source_path from vector store.
+
+        Used by the pipeline when force=True to clean up old chunks before
+        re-ingesting, since content-hash-based IDs mean changed content
+        produces new IDs and old ones would remain as orphans.
+
+        Args:
+            source_path: The source_path metadata value to match.
+
+        Returns:
+            Number of chunks deleted.
+        """
+        try:
+            collection = self.vector_store._collection
+            result = collection.get(
+                where={"source_path": source_path},
+                include=[],
+            )
+            ids_to_delete = result["ids"]
+            if ids_to_delete:
+                collection.delete(ids=ids_to_delete)
+            return len(ids_to_delete)
+        except Exception:
+            return 0
+
     def upsert_batch(
         self,
         batches: List[tuple[List[Chunk], List[List[float]]]],

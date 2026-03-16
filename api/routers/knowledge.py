@@ -93,6 +93,8 @@ async def start_ingest(req: IngestRequest):
     _tasks[task_id] = {
         "files": [str(f) for f in files],
         "collection": req.collection,
+        "force": req.force,
+        "skip_llm_transform": req.skip_llm_transform,
         "stop_requested": False,
         "status": "pending",
     }
@@ -111,7 +113,12 @@ async def ingest_progress(task_id: str):
         from src.ingestion.pipeline import IngestionPipeline
 
         settings = load_settings()
-        pipeline = IngestionPipeline(settings, collection=task["collection"])
+        pipeline = IngestionPipeline(
+            settings,
+            collection=task["collection"],
+            force=task.get("force", False),
+            skip_llm_transform=task.get("skip_llm_transform", False),
+        )
 
         files = task["files"]
         total = len(files)

@@ -32,6 +32,9 @@ class PlantUMLRequest(BaseModel):
     format: str = "svg"
 
 
+_ACTIVITY_KEYWORDS = re.compile(r"(?:^|\n)\s*(?:start|stop|:.*?;)", re.DOTALL)
+
+
 def _sanitize_plantuml(code: str) -> str:
     """Fix common LLM mistakes in PlantUML syntax."""
     # Chinese em-dash arrow -> PlantUML arrow
@@ -51,6 +54,10 @@ def _sanitize_plantuml(code: str) -> str:
     # Fix broken arrows with extra spaces
     code = re.sub(r"-\s+->", "-->", code)
     code = re.sub(r"<-\s+-", "<--", code)
+    # Remove 'left to right direction' from activity diagrams (incompatible
+    # with Kroki's PlantUML engine — causes "Assumed diagram type: class")
+    if _ACTIVITY_KEYWORDS.search(code):
+        code = re.sub(r"(?m)^\s*left to right direction\s*\n?", "", code)
     return code
 
 
@@ -77,6 +84,11 @@ async def render_plantuml(req: PlantUMLRequest):
     """
     code = _sanitize_plantuml(req.code)
 
+    # Auto-wrap with @startuml/@enduml if missing (LLMs often omit them)
+    stripped = code.strip()
+    if not stripped.lower().startswith("@start"):
+        code = f"@startuml\n{stripped}\n@enduml"
+
     # Check cache
     cache_key = hashlib.md5(code.encode()).hexdigest()
     if cache_key in _svg_cache:
@@ -85,11 +97,12 @@ async def render_plantuml(req: PlantUMLRequest):
 
     try:
         # Use Kroki POST API (more reliable than GET with encoded URL)
+        # Must specify charset=utf-8 for Chinese characters
         async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{KROKI_BASE}/plantuml/{req.format}",
                 content=code.encode('utf-8'),
-                headers={"Content-Type": "text/plain"},
+                headers={"Content-Type": "text/plain; charset=utf-8"},
             )
             
             if resp.status_code != 200:
