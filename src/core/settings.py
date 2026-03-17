@@ -88,6 +88,53 @@ def _require_list(data: Dict[str, Any], key: str, path: str) -> List[Any]:
     return value
 
 
+def _parse_embedding_settings(embedding: Dict[str, Any]) -> "EmbeddingSettings":
+    """Parse embedding settings including optional BGE-M3 config."""
+    bge_m3_config = None
+    if "bge_m3" in embedding:
+        bge_m3_data = embedding["bge_m3"]
+        if isinstance(bge_m3_data, dict):
+            bge_m3_config = BGEM3Config(
+                model=bge_m3_data.get("model", "BAAI/bge-m3"),
+                use_fp16=bge_m3_data.get("use_fp16", True),
+                device=bge_m3_data.get("device", "auto"),
+            )
+    
+    return EmbeddingSettings(
+        provider=_require_str(embedding, "provider", "embedding"),
+        model=_require_str(embedding, "model", "embedding"),
+        dimensions=_require_int(embedding, "dimensions", "embedding"),
+        api_key=_resolve_api_key(embedding.get("api_key")),
+        api_version=embedding.get("api_version"),
+        azure_endpoint=embedding.get("azure_endpoint"),
+        deployment_name=embedding.get("deployment_name"),
+        base_url=embedding.get("base_url"),
+        bge_m3=bge_m3_config,
+    )
+
+
+def _parse_ingestion_settings(ingestion: Dict[str, Any]) -> "IngestionSettings":
+    """Parse ingestion settings including optional context_enricher config."""
+    context_enricher_config = None
+    if "context_enricher" in ingestion:
+        ce_data = ingestion["context_enricher"]
+        if isinstance(ce_data, dict):
+            context_enricher_config = ContextEnricherConfig(
+                enabled=ce_data.get("enabled", True),
+            )
+    
+    return IngestionSettings(
+        chunk_size=_require_int(ingestion, "chunk_size", "ingestion"),
+        chunk_overlap=_require_int(ingestion, "chunk_overlap", "ingestion"),
+        splitter=_require_str(ingestion, "splitter", "ingestion"),
+        batch_size=_require_int(ingestion, "batch_size", "ingestion"),
+        pdf_parser=ingestion.get("pdf_parser", "markitdown"),
+        chunk_refiner=ingestion.get("chunk_refiner"),
+        metadata_enricher=ingestion.get("metadata_enricher"),
+        context_enricher=context_enricher_config,
+    )
+
+
 @dataclass(frozen=True)
 class LLMSettings:
     provider: str
@@ -104,6 +151,14 @@ class LLMSettings:
 
 
 @dataclass(frozen=True)
+class BGEM3Config:
+    """BGE-M3 specific configuration."""
+    model: str = "BAAI/bge-m3"
+    use_fp16: bool = True
+    device: str = "auto"  # auto/cpu/cuda
+
+
+@dataclass(frozen=True)
 class EmbeddingSettings:
     provider: str
     model: str
@@ -115,6 +170,8 @@ class EmbeddingSettings:
     deployment_name: Optional[str] = None
     # Ollama-specific optional fields
     base_url: Optional[str] = None
+    # BGE-M3 specific config
+    bge_m3: Optional[BGEM3Config] = None
 
 
 @dataclass(frozen=True)
@@ -130,6 +187,8 @@ class RetrievalSettings:
     sparse_top_k: int
     fusion_top_k: int
     rrf_k: int
+    query_rewrite: bool = False  # LLM query rewriting
+    hyde_enabled: bool = False   # HyDE (Hypothetical Document Embedding)
 
 
 @dataclass(frozen=True)
@@ -169,6 +228,12 @@ class VisionLLMSettings:
 
 
 @dataclass(frozen=True)
+class ContextEnricherConfig:
+    """Context Enricher configuration."""
+    enabled: bool = True
+
+
+@dataclass(frozen=True)
 class IngestionSettings:
     chunk_size: int
     chunk_overlap: int
@@ -177,6 +242,7 @@ class IngestionSettings:
     pdf_parser: str = "markitdown"  # Options: markitdown, layout
     chunk_refiner: Optional[Dict[str, Any]] = None  # 动态配置
     metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
+    context_enricher: Optional[ContextEnricherConfig] = None  # 上下文注入配置
 
 
 @dataclass(frozen=True)
@@ -244,16 +310,7 @@ class Settings:
                 deployment_name=llm.get("deployment_name"),
                 base_url=llm.get("base_url"),
             ),
-            embedding=EmbeddingSettings(
-                provider=_require_str(embedding, "provider", "embedding"),
-                model=_require_str(embedding, "model", "embedding"),
-                dimensions=_require_int(embedding, "dimensions", "embedding"),
-                api_key=_resolve_api_key(embedding.get("api_key")),
-                api_version=embedding.get("api_version"),
-                azure_endpoint=embedding.get("azure_endpoint"),
-                deployment_name=embedding.get("deployment_name"),
-                base_url=embedding.get("base_url"),
-            ),
+            embedding=_parse_embedding_settings(embedding),
             vector_store=VectorStoreSettings(
                 provider=_require_str(vector_store, "provider", "vector_store"),
                 persist_directory=_require_str(vector_store, "persist_directory", "vector_store"),
@@ -264,6 +321,8 @@ class Settings:
                 sparse_top_k=_require_int(retrieval, "sparse_top_k", "retrieval"),
                 fusion_top_k=_require_int(retrieval, "fusion_top_k", "retrieval"),
                 rrf_k=_require_int(retrieval, "rrf_k", "retrieval"),
+                query_rewrite=retrieval.get("query_rewrite", False),
+                hyde_enabled=retrieval.get("hyde_enabled", False),
             ),
             rerank=RerankSettings(
                 enabled=_require_bool(rerank, "enabled", "rerank"),

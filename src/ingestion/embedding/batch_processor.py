@@ -14,6 +14,7 @@ Design Principles:
 from typing import List, Dict, Any, Optional, Tuple
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -154,13 +155,35 @@ class BatchProcessor:
             batch_start = time.time()
             
             try:
-                # Dense encoding
-                batch_dense = self.dense_encoder.encode(batch, trace=trace)
-                dense_vectors.extend(batch_dense)
+                # Parallel encoding: Dense and Sparse run concurrently
+                batch_dense = None
+                batch_sparse = None
+                dense_error = None
+                sparse_error = None
                 
-                # Sparse encoding
-                batch_sparse = self.sparse_encoder.encode(batch, trace=trace)
-                sparse_stats.extend(batch_sparse)
+                with ThreadPoolExecutor(max_workers=2) as executor:
+                    dense_future = executor.submit(self.dense_encoder.encode, batch, trace)
+                    sparse_future = executor.submit(self.sparse_encoder.encode, batch, trace)
+                    
+                    try:
+                        batch_dense = dense_future.result()
+                    except Exception as e:
+                        dense_error = e
+                        logger.error(f"Batch {batch_idx} dense encoding failed: {e}")
+                    
+                    try:
+                        batch_sparse = sparse_future.result()
+                    except Exception as e:
+                        sparse_error = e
+                        logger.error(f"Batch {batch_idx} sparse encoding failed: {e}")
+                
+                if dense_error and sparse_error:
+                    raise RuntimeError(f"Both encoders failed: dense={dense_error}, sparse={sparse_error}")
+                
+                if batch_dense:
+                    dense_vectors.extend(batch_dense)
+                if batch_sparse:
+                    sparse_stats.extend(batch_sparse)
                 
                 successful_chunks += len(batch)
                 

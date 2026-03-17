@@ -47,6 +47,12 @@ dev = [
     "mypy>=1.0",
     "openai>=1.0",
 ]
+ml = [
+    "FlagEmbedding>=1.2.0",  # BGE-M3 dense+sparse embedding
+]
+docling = [
+    "docling>=2.0.0",  # IBM 深度学习 PDF 版面理解 (需 GPU)
+]
 
 [project.scripts]
 mcp-server = "main:main"

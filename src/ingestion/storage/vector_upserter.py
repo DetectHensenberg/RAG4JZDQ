@@ -167,6 +167,55 @@ class VectorUpserter:
         
         return chunk_id
     
+    def filter_existing_chunks(
+        self,
+        chunks: List[Chunk],
+    ) -> tuple[List[Chunk], List[int]]:
+        """Filter out chunks that already exist in vector store.
+        
+        Checks which chunks already exist based on their content-hash IDs.
+        Returns only new chunks that need to be embedded.
+        
+        Args:
+            chunks: List of Chunk objects to check.
+        
+        Returns:
+            Tuple of (new_chunks, new_indices) where:
+            - new_chunks: Chunks that don't exist in store
+            - new_indices: Original indices of new chunks (for vector alignment)
+        
+        Example:
+            >>> chunks = [chunk1, chunk2, chunk3]  # chunk2 already exists
+            >>> new_chunks, indices = upserter.filter_existing_chunks(chunks)
+            >>> len(new_chunks)  # 2 (chunk1, chunk3)
+            >>> indices  # [0, 2]
+        """
+        if not chunks:
+            return [], []
+        
+        # Generate IDs for all chunks
+        chunk_ids = [self._generate_chunk_id(chunk) for chunk in chunks]
+        
+        # Check which IDs exist in vector store
+        try:
+            collection = self.vector_store._collection
+            result = collection.get(ids=chunk_ids, include=[])
+            existing_ids = set(result["ids"])
+        except Exception:
+            # If check fails, assume none exist (safe fallback)
+            existing_ids = set()
+        
+        # Filter to new chunks only
+        new_chunks = []
+        new_indices = []
+        
+        for i, (chunk, chunk_id) in enumerate(zip(chunks, chunk_ids)):
+            if chunk_id not in existing_ids:
+                new_chunks.append(chunk)
+                new_indices.append(i)
+        
+        return new_chunks, new_indices
+    
     def delete_by_source_path(self, source_path: str) -> int:
         """Delete all chunks with the given source_path from vector store.
 

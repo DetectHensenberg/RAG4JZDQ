@@ -18,6 +18,7 @@ from api.db import get_connection
 from api.deps import get_hybrid_search, get_llm, get_settings
 from api.models import ChatRequest
 from src.core.settings import resolve_path
+from src.core.query_engine.answer_cache import get_answer_cache
 from src.core.response.multimodal_assembler import MultimodalAssembler
 from src.ingestion.storage.image_storage import ImageStorage
 
@@ -252,6 +253,18 @@ async def chat_stream(req: ChatRequest):
         images: List[Dict[str, Any]] = []
         context = ""
 
+        # Step 0: Check L3 answer cache (FAQ-type questions)
+        answer_cache = get_answer_cache()
+        cached_answer = answer_cache.get(question)
+        
+        if cached_answer is not None:
+            logger.info(f"[perf] L3 answer cache HIT for: {question[:50]}...")
+            # Return cached answer immediately
+            yield f"data: {json.dumps({'type': 'references', 'data': cached_answer.sources}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'token', 'content': cached_answer.answer}, ensure_ascii=False)}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'answer': cached_answer.answer, 'cache_hit': True}, ensure_ascii=False)}\n\n"
+            return
+
         # Step 1: Retrieve — then immediately send references so frontend
         #         shows them while LLM streams.
         try:
@@ -354,6 +367,18 @@ async def chat_stream(req: ChatRequest):
             yield f"data: {json.dumps({'type': 'images', 'data': images}, ensure_ascii=False)}\n\n"
 
         yield f"data: {json.dumps({'type': 'done', 'answer': full_answer}, ensure_ascii=False)}\n\n"
+
+        # Save to L3 answer cache (for FAQ-type repeated queries)
+        try:
+            answer_cache.put(
+                query=question,
+                answer=full_answer,
+                sources=references,
+                metadata={"collection": req.collection, "top_k": req.top_k},
+            )
+            logger.debug(f"Stored answer in L3 cache for: {question[:50]}...")
+        except Exception as e:
+            logger.warning(f"Failed to cache answer: {e}")
 
         # Save to history
         _save_history(question, full_answer, references)

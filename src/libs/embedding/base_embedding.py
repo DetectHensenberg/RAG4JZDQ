@@ -7,7 +7,9 @@ through configuration-driven instantiation.
 
 from __future__ import annotations
 
+import asyncio
 from abc import ABC, abstractmethod
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, List, Optional
 
 
@@ -94,3 +96,72 @@ class BaseEmbedding(ABC):
         raise NotImplementedError(
             f"{self.__class__.__name__} must implement get_dimension() method"
         )
+    
+    async def embed_async(
+        self,
+        texts: List[str],
+        trace: Optional[Any] = None,
+        **kwargs: Any,
+    ) -> List[List[float]]:
+        """Async version of embed() for concurrent batch processing.
+        
+        Default implementation wraps sync embed() in executor.
+        Subclasses can override for native async support.
+        
+        Args:
+            texts: List of text strings to embed.
+            trace: Optional TraceContext for observability.
+            **kwargs: Provider-specific parameters.
+        
+        Returns:
+            List of embedding vectors.
+        """
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(
+            None,  # Use default executor
+            lambda: self.embed(texts, trace, **kwargs)
+        )
+    
+    async def embed_batches_async(
+        self,
+        text_batches: List[List[str]],
+        trace: Optional[Any] = None,
+        max_concurrency: int = 5,
+        **kwargs: Any,
+    ) -> List[List[float]]:
+        """Embed multiple batches concurrently.
+        
+        This method processes multiple batches in parallel, significantly
+        improving throughput when embedding large numbers of texts.
+        
+        Args:
+            text_batches: List of text batches to embed.
+            trace: Optional TraceContext for observability.
+            max_concurrency: Maximum concurrent API calls (default: 5).
+            **kwargs: Provider-specific parameters.
+        
+        Returns:
+            Flattened list of all embedding vectors.
+        
+        Example:
+            >>> batches = [["text1", "text2"], ["text3", "text4"]]
+            >>> vectors = await embedding.embed_batches_async(batches)
+            >>> len(vectors)  # 4
+        """
+        semaphore = asyncio.Semaphore(max_concurrency)
+        
+        async def embed_with_limit(batch: List[str]) -> List[List[float]]:
+            async with semaphore:
+                return await self.embed_async(batch, trace, **kwargs)
+        
+        tasks = [embed_with_limit(batch) for batch in text_batches]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Flatten results and handle errors
+        all_vectors: List[List[float]] = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                raise RuntimeError(f"Batch {i} failed: {result}") from result
+            all_vectors.extend(result)
+        
+        return all_vectors

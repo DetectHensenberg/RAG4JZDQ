@@ -22,7 +22,10 @@ Design Principles:
 from __future__ import annotations
 
 import hashlib
-from typing import TYPE_CHECKING, List
+import re
+from datetime import datetime
+from pathlib import Path
+from typing import TYPE_CHECKING, List, Tuple
 
 from src.core.types import Chunk, Document
 from src.libs.splitter.splitter_factory import SplitterFactory
@@ -122,11 +125,15 @@ class DocumentChunker:
                 f"Text length: {len(document.text)}"
             )
         
-        # Step 2: Transform text fragments into Chunk objects with enrichment
+        # Step 2: Build heading paths for all chunks
+        heading_paths = self._build_heading_paths(text_fragments)
+        
+        # Step 3: Transform text fragments into Chunk objects with enrichment
         chunks: List[Chunk] = []
         for index, text in enumerate(text_fragments):
             chunk_id = self._generate_chunk_id(document.id, index, text)
-            chunk_metadata = self._inherit_metadata(document, index, text)
+            heading_path = heading_paths[index] if index < len(heading_paths) else ""
+            chunk_metadata = self._inherit_metadata(document, index, text, heading_path)
             
             chunk = Chunk(
                 id=chunk_id,
@@ -136,6 +143,58 @@ class DocumentChunker:
             chunks.append(chunk)
         
         return chunks
+    
+    def _build_heading_paths(self, text_fragments: List[str]) -> List[str]:
+        """Build heading_path for each chunk by tracking Markdown heading hierarchy.
+        
+        Maintains a stack of headings and their levels. When a new heading is
+        encountered, pops headings of equal or lower level before pushing.
+        
+        Args:
+            text_fragments: List of chunk text strings
+            
+        Returns:
+            List of heading paths, one per chunk (e.g., "报销政策 > 差旅报销")
+        """
+        heading_stack: List[Tuple[str, int]] = []
+        heading_paths: List[str] = []
+        
+        for chunk_text in text_fragments:
+            # Find all Markdown headings in this chunk
+            headings = re.findall(r'^(#{1,6})\s+(.+)$', chunk_text, re.MULTILINE)
+            
+            for level_marks, title in headings:
+                level = len(level_marks)
+                # Pop headings of equal or lower level (higher number = lower in hierarchy)
+                while heading_stack and heading_stack[-1][1] >= level:
+                    heading_stack.pop()
+                heading_stack.append((title.strip(), level))
+            
+            # Build path from current stack
+            path = " > ".join(h[0] for h in heading_stack)
+            heading_paths.append(path)
+        
+        return heading_paths
+    
+    def _detect_content_type(self, text: str) -> str:
+        """Detect the content type of a chunk.
+        
+        Args:
+            text: Chunk text content
+            
+        Returns:
+            Content type: "table", "code", "list", or "text"
+        """
+        # Check for Markdown table (lines starting and ending with |)
+        if re.search(r'^\|.+\|$', text, re.MULTILINE):
+            return "table"
+        # Check for code blocks
+        if re.search(r'^```', text, re.MULTILINE):
+            return "code"
+        # Check for lists (numbered or bulleted)
+        if re.search(r'^\s*(\d+\.\s|[-*+]\s)', text, re.MULTILINE):
+            return "list"
+        return "text"
     
     def _generate_chunk_id(self, doc_id: str, index: int, text: str) -> str:
         """Generate unique and deterministic chunk ID.
@@ -168,7 +227,13 @@ class DocumentChunker:
         # Format: {doc_id}_{index:04d}_{hash_8chars}
         return f"{doc_id}_{index:04d}_{content_hash}"
     
-    def _inherit_metadata(self, document: Document, chunk_index: int, chunk_text: str = "") -> dict:
+    def _inherit_metadata(
+        self, 
+        document: Document, 
+        chunk_index: int, 
+        chunk_text: str = "",
+        heading_path: str = ""
+    ) -> dict:
         """Inherit metadata from document and add chunk-specific fields.
         
         This creates a new metadata dict containing:
@@ -176,6 +241,11 @@ class DocumentChunker:
         - chunk_index: Sequential position (0-based)
         - source_ref: Reference to parent document ID
         - image_refs: List of image IDs referenced in this chunk (extracted from placeholders)
+        - heading_path: Hierarchical path of Markdown headings (e.g., "报销政策 > 差旅报销")
+        - content_type: Type of content (table/code/list/text)
+        - file_name: Filename without extension
+        - file_ext: File extension without dot
+        - ingested_at: ISO timestamp of ingestion
         
         Note: The document-level 'images' field is intentionally excluded from chunk
         metadata as it would be redundant. Instead, chunk-specific 'image_refs' is
@@ -185,6 +255,7 @@ class DocumentChunker:
             document: Source document whose metadata to inherit
             chunk_index: Sequential position of this chunk
             chunk_text: The text content of this chunk (used to extract image_refs)
+            heading_path: Hierarchical heading path for this chunk
         
         Returns:
             Metadata dict with inherited and chunk-specific fields
@@ -195,7 +266,7 @@ class DocumentChunker:
             ...     text="Content",
             ...     metadata={"source_path": "file.pdf", "title": "Report"}
             ... )
-            >>> metadata = chunker._inherit_metadata(doc, 2, "See [IMAGE: img_001]")
+            >>> metadata = chunker._inherit_metadata(doc, 2, "See [IMAGE: img_001]", "Chapter 1")
             >>> metadata["source_path"]
             'file.pdf'
             >>> metadata["chunk_index"]
@@ -204,9 +275,9 @@ class DocumentChunker:
             'doc_123'
             >>> metadata["image_refs"]
             ['img_001']
+            >>> metadata["heading_path"]
+            'Chapter 1'
         """
-        import re
-        
         # Copy all document metadata (shallow copy is sufficient for primitives)
         chunk_metadata = document.metadata.copy()
         
@@ -219,6 +290,25 @@ class DocumentChunker:
         # Add chunk-specific fields
         chunk_metadata["chunk_index"] = chunk_index
         chunk_metadata["source_ref"] = document.id
+        
+        # Add heading_path for hierarchical navigation
+        chunk_metadata["heading_path"] = heading_path
+        
+        # Add content_type detection
+        chunk_metadata["content_type"] = self._detect_content_type(chunk_text) if chunk_text else "text"
+        
+        # Add file metadata
+        source_path = document.metadata.get("source_path", "")
+        if source_path:
+            path_obj = Path(source_path)
+            chunk_metadata["file_name"] = path_obj.stem
+            chunk_metadata["file_ext"] = path_obj.suffix.lstrip(".")
+        else:
+            chunk_metadata["file_name"] = ""
+            chunk_metadata["file_ext"] = ""
+        
+        # Add ingestion timestamp
+        chunk_metadata["ingested_at"] = datetime.now().isoformat()
         
         # Extract image_refs from chunk text by finding [IMAGE: xxx] placeholders
         image_refs = []

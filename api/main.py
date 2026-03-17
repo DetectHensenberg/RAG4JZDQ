@@ -99,11 +99,36 @@ app.include_router(file_dialog.router, prefix="/api/file-dialog", tags=["文件�
 
 @app.on_event("startup")
 async def startup_event():
-    """Eagerly initialize ChromaStore so HNSW backup runs on startup."""
+    """Eagerly initialize ChromaStore and warm up HNSW indices.
+    
+    This eliminates cold-start latency for first queries by:
+    1. Initializing ChromaStore and running HNSW backup
+    2. Executing dummy queries to load indices into memory
+    """
+    import time
+    start = time.time()
+    
     try:
-        from api.deps import get_hybrid_search
+        from api.deps import get_hybrid_search, get_vector_store
+        
+        # Initialize default collection
         get_hybrid_search("default")
         print("[startup] ChromaStore initialized, HNSW backup completed")
+        
+        # Warm up HNSW index with dummy query
+        try:
+            store = get_vector_store("default")
+            # Create dummy vector matching embedding dimension
+            dim = getattr(store, '_dimension', 1024)
+            dummy_vector = [0.0] * dim
+            store.query(dummy_vector, top_k=1)
+            print(f"[startup] HNSW index warmed up (dim={dim})")
+        except Exception as e:
+            print(f"[startup] HNSW warmup skipped: {e}")
+        
+        elapsed = time.time() - start
+        print(f"[startup] Total warmup time: {elapsed:.2f}s")
+        
     except Exception as e:
         print(f"[startup] ChromaStore init failed: {e}")
         import traceback

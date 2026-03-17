@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter
 from pydantic import BaseModel
@@ -20,6 +20,7 @@ class QueryRequest(BaseModel):
     query: str
     collection: str = "default"
     top_k: int = 10
+    filters: Optional[Dict[str, Any]] = None  # Metadata filters (e.g., {"content_type": "table"})
 
 
 class QueryResult(BaseModel):
@@ -52,7 +53,7 @@ async def test_query(req: QueryRequest):
         start = time.time()
         
         search = get_hybrid_search(req.collection)
-        results = search.search(query=req.query, top_k=req.top_k)
+        results = search.search(query=req.query, top_k=req.top_k, filters=req.filters)
         
         latency_ms = (time.time() - start) * 1000
         

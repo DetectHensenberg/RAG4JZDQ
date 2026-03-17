@@ -21,6 +21,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.core.types import RetrievalResult
+from src.core.query_engine.rerank_cache import get_rerank_cache
 from src.libs.reranker.base_reranker import BaseReranker, NoneReranker
 from src.libs.reranker.reranker_factory import RerankerFactory
 
@@ -297,8 +298,42 @@ class CoreReranker:
         
         # Convert to reranker input format
         candidates = self._results_to_candidates(results)
+        candidate_ids = [c["id"] for c in candidates]
         
-        # Attempt reranking
+        # Check cache first
+        cache = get_rerank_cache()
+        cached = cache.get(query, candidate_ids)
+        
+        if cached is not None:
+            # Cache hit - reconstruct results from cached order
+            logger.debug("Rerank cache hit")
+            id_to_result = {r.chunk_id: r for r in results}
+            reranked_results = []
+            for chunk_id in cached.reranked_ids:
+                if chunk_id in id_to_result:
+                    original = id_to_result[chunk_id]
+                    reranked_results.append(RetrievalResult(
+                        chunk_id=original.chunk_id,
+                        score=cached.scores.get(chunk_id, original.score),
+                        text=original.text,
+                        metadata={
+                            **original.metadata,
+                            "original_score": original.score,
+                            "rerank_score": cached.scores.get(chunk_id, original.score),
+                            "reranked": True,
+                            "cache_hit": True,
+                        },
+                    ))
+            
+            final_results = reranked_results[:effective_top_k]
+            return RerankResult(
+                results=final_results,
+                used_fallback=False,
+                reranker_type=self._reranker_type,
+                original_order=results[:],
+            )
+        
+        # Cache miss - perform reranking
         try:
             logger.debug(f"Reranking {len(candidates)} candidates with {self._reranker_type}")
             _t0 = time.monotonic()
@@ -312,6 +347,11 @@ class CoreReranker:
             
             # Convert back to RetrievalResult
             reranked_results = self._candidates_to_results(reranked_candidates, results)
+            
+            # Store in cache
+            reranked_ids = [r.chunk_id for r in reranked_results]
+            scores = {r.chunk_id: r.score for r in reranked_results}
+            cache.put(query, candidate_ids, reranked_ids, scores)
             
             # Apply top_k limit
             final_results = reranked_results[:effective_top_k]

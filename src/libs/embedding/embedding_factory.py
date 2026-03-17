@@ -129,6 +129,12 @@ def _register_builtin_providers() -> None:
         EmbeddingFactory.register_provider("ollama", OllamaEmbedding)
     except ImportError:
         pass  # Ollama provider not available
+    
+    try:
+        from src.libs.embedding.bge_m3_embedding import BGEM3Embedding
+        EmbeddingFactory.register_provider("bge-m3", BGEM3Embedding)
+    except ImportError:
+        pass  # BGE-M3 provider not available (requires FlagEmbedding)
 
 
 # Register providers when module is imported

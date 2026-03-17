@@ -10,6 +10,7 @@ from typing import Any
 from fastapi import APIRouter
 
 from src.core.settings import resolve_path
+from src.ingestion.stats import get_stats_tracker
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -96,3 +97,54 @@ async def get_stats():
         stats["collections"] = ["default"]
 
     return {"ok": True, "data": stats}
+
+
+@router.get("/ingestion-stats")
+async def get_ingestion_stats(days: int = 30):
+    """Return ingestion pipeline statistics.
+    
+    Args:
+        days: Number of days to aggregate (default 30)
+        
+    Returns:
+        Aggregated ingestion statistics
+    """
+    try:
+        tracker = get_stats_tracker()
+        stats = tracker.to_dict(days=days)
+        return {"ok": True, "data": stats}
+    except Exception as e:
+        logger.exception(f"Failed to get ingestion stats: {e}")
+        return {"ok": False, "message": str(e)}
+
+
+@router.get("/cache-stats")
+async def get_cache_stats():
+    """Return cache statistics for performance monitoring.
+    
+    Returns:
+        Statistics for all cache layers (L1: Embedding, L2: Retrieval, L3: Answer, Rerank).
+    """
+    try:
+        from src.libs.embedding.embedding_cache import get_query_cache
+        from src.core.query_engine.retrieval_cache import get_retrieval_cache
+        from src.core.query_engine.answer_cache import get_answer_cache
+        from src.core.query_engine.rerank_cache import get_rerank_cache
+        
+        query_cache = get_query_cache()
+        retrieval_cache = get_retrieval_cache()
+        answer_cache = get_answer_cache()
+        rerank_cache = get_rerank_cache()
+        
+        return {
+            "ok": True,
+            "data": {
+                "L1_embedding_cache": query_cache.stats(),
+                "L2_retrieval_cache": retrieval_cache.stats(),
+                "L3_answer_cache": answer_cache.stats(),
+                "rerank_cache": rerank_cache.stats(),
+            }
+        }
+    except Exception as e:
+        logger.exception(f"Failed to get cache stats: {e}")
+        return {"ok": False, "message": str(e)}

@@ -36,6 +36,7 @@ from src.ingestion.chunking.document_chunker import DocumentChunker
 from src.ingestion.transform.chunk_refiner import ChunkRefiner
 from src.ingestion.transform.metadata_enricher import MetadataEnricher
 from src.ingestion.transform.image_captioner import ImageCaptioner
+from src.ingestion.transform.context_enricher import ContextEnricher
 from src.ingestion.embedding.dense_encoder import DenseEncoder
 from src.ingestion.embedding.sparse_encoder import SparseEncoder
 from src.ingestion.embedding.batch_processor import BatchProcessor
@@ -164,6 +165,9 @@ class IngestionPipeline:
         self.image_captioner = ImageCaptioner(settings)
         has_vision = self.image_captioner.llm is not None
         logger.info(f"  ✓ ImageCaptioner initialized (vision_enabled={has_vision})")
+        
+        self.context_enricher = ContextEnricher(settings)
+        logger.info(f"  ✓ ContextEnricher initialized (enabled={self.context_enricher.enabled})")
         
         # Stage 5: Encoders
         embedding = EmbeddingFactory.create(settings)
@@ -409,8 +413,13 @@ class IngestionPipeline:
             logger.info("\n🔄 Stage 4: Transform Pipeline")
             _notify("transform", 4)
             
-            # 4a: Chunk Refinement
+            # 4a: Context Enrichment (zero-cost, always run first)
             _t0_transform = time.monotonic()
+            chunks = self.context_enricher.transform(chunks, trace)
+            context_enriched = sum(1 for c in chunks if c.metadata.get("embedding_text"))
+            logger.info(f"  4a. Context Enrichment: {context_enriched}/{len(chunks)} chunks enriched")
+            
+            # 4b: Chunk Refinement
             _pre_refine_texts = {c.id: c.text for c in chunks}
             refined_by_llm = refined_by_rule = 0
             enriched_by_llm = enriched_by_rule = 0
@@ -443,6 +452,7 @@ class IngestionPipeline:
                 logger.info(f"      Chunks with captions: {captioned}")
             
             stages["transform"] = {
+                "context_enricher": {"enriched": context_enriched},
                 "chunk_refiner": {"llm": refined_by_llm, "rule": refined_by_rule},
                 "metadata_enricher": {"llm": enriched_by_llm, "rule": enriched_by_rule},
                 "image_captioner": {"captioned_chunks": captioned}

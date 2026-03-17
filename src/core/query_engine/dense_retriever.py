@@ -11,6 +11,7 @@ import logging
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 
 from src.core.types import RetrievalResult
+from src.libs.embedding.embedding_cache import get_query_cache
 
 if TYPE_CHECKING:
     from src.core.settings import Settings
@@ -135,10 +136,19 @@ class DenseRetriever:
         
         logger.debug(f"Retrieving for query='{query[:50]}...', top_k={effective_top_k}")
         
-        # Step 1: Embed the query
+        # Step 1: Embed the query (with caching)
         try:
-            query_vectors = self.embedding_client.embed([query], trace=trace)
-            query_vector = query_vectors[0]
+            cache = get_query_cache()
+            query_vector = cache.get(query)
+            
+            if query_vector is None:
+                # Cache miss - compute embedding
+                query_vectors = self.embedding_client.embed([query], trace=trace)
+                query_vector = query_vectors[0]
+                cache.put(query, query_vector)
+                logger.debug("Query embedding: cache miss")
+            else:
+                logger.debug("Query embedding: cache hit")
         except Exception as e:
             raise RuntimeError(
                 f"Failed to embed query: {e}. "
@@ -164,6 +174,65 @@ class DenseRetriever:
         
         logger.debug(f"Retrieved {len(results)} results for query")
         return results
+    
+    def embed_queries_batch(
+        self,
+        queries: List[str],
+        trace: Optional[Any] = None,
+    ) -> List[List[float]]:
+        """Embed multiple queries in a single API call.
+        
+        This is more efficient than calling retrieve() multiple times
+        when you have query variants (original, rewritten, HyDE).
+        
+        Args:
+            queries: List of query strings to embed.
+            trace: Optional TraceContext for observability.
+        
+        Returns:
+            List of embedding vectors (one per query).
+        
+        Example:
+            >>> queries = [original_query, rewritten_query, hyde_query]
+            >>> vectors = retriever.embed_queries_batch(queries)
+            >>> # 1 API call instead of 3
+        """
+        if not queries:
+            return []
+        
+        cache = get_query_cache()
+        
+        # Check cache for each query
+        results: List[Optional[List[float]]] = []
+        uncached_queries: List[str] = []
+        uncached_indices: List[int] = []
+        
+        for i, query in enumerate(queries):
+            cached = cache.get(query)
+            results.append(cached)
+            if cached is None:
+                uncached_queries.append(query)
+                uncached_indices.append(i)
+        
+        # Embed uncached queries in single batch
+        if uncached_queries:
+            try:
+                new_vectors = self.embedding_client.embed(uncached_queries, trace=trace)
+                
+                # Store in cache and fill results
+                for query, vector, idx in zip(uncached_queries, new_vectors, uncached_indices):
+                    cache.put(query, vector)
+                    results[idx] = vector
+                    
+                logger.debug(f"Batch embedded {len(uncached_queries)} queries (cache miss)")
+            except Exception as e:
+                raise RuntimeError(f"Failed to batch embed queries: {e}") from e
+        
+        cache_hits = len(queries) - len(uncached_queries)
+        if cache_hits > 0:
+            logger.debug(f"Batch query embedding: {cache_hits} cache hits")
+        
+        return results  # type: ignore
     
     def _validate_query(self, query: str) -> None:
         """Validate the query string.

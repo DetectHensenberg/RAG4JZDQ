@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from src.core.types import ProcessedQuery, RetrievalResult
+from src.core.query_engine.retrieval_cache import get_retrieval_cache, normalize_query
 
 if TYPE_CHECKING:
     from src.core.query_engine.dense_retriever import DenseRetriever
@@ -244,6 +245,42 @@ class HybridSearch:
         
         logger.debug(f"HybridSearch: query='{query[:50]}...', top_k={effective_top_k}, fusion_k={fusion_top_k}")
         
+        # Step 0: Check retrieval cache (Level 2 cache - skips embedding + search)
+        retrieval_cache = get_retrieval_cache()
+        cached = retrieval_cache.get(query)
+        
+        if cached is not None and not filters:  # Don't use cache if filters specified
+            logger.debug("Retrieval cache hit - skipping embedding and search")
+            # Reconstruct RetrievalResult from cache
+            cached_results = [
+                RetrievalResult(
+                    chunk_id=chunk_id,
+                    score=cached.scores.get(chunk_id, 0.0),
+                    text=cached.texts.get(chunk_id, ""),
+                    metadata={**cached.metadata.get(chunk_id, {}), "cache_hit": True},
+                )
+                for chunk_id in cached.chunk_ids
+            ]
+            
+            # Still apply reranking if available (reranker has its own cache)
+            if self.reranker is not None and cached_results:
+                rerank_result = self.reranker.rerank(query, cached_results, top_k=effective_top_k * 2)
+                cached_results = rerank_result.results
+            
+            # Apply source diversification and limits
+            cached_results = self._diversify_by_source(cached_results, max_per_source=2)
+            final_results = cached_results[:effective_top_k]
+            
+            if return_details:
+                return HybridSearchResult(
+                    results=final_results,
+                    dense_results=None,
+                    sparse_results=None,
+                    used_fallback=False,
+                    processed_query=None,
+                )
+            return final_results
+        
         # Step 1: Process query
         _t0 = time.monotonic()
         processed_query = self._process_query(query)
@@ -331,6 +368,18 @@ class HybridSearch:
         
         # Step 6: Limit to top_k
         final_results = fused_results[:effective_top_k]
+        
+        # Step 7: Store in retrieval cache (L2) if no filters were applied
+        if not filters and final_results:
+            try:
+                chunk_ids = [r.chunk_id for r in final_results]
+                scores = {r.chunk_id: r.score for r in final_results}
+                texts = {r.chunk_id: r.text for r in final_results}
+                metadata = {r.chunk_id: r.metadata for r in final_results}
+                retrieval_cache.put(query, chunk_ids, scores, texts, metadata)
+                logger.debug(f"Stored {len(final_results)} results in retrieval cache")
+            except Exception as e:
+                logger.warning(f"Failed to store in retrieval cache: {e}")
         
         logger.debug(f"HybridSearch: returning {len(final_results)} results")
         

@@ -52,6 +52,8 @@ retrieval:
   sparse_top_k: 20
   fusion_top_k: 10
   rrf_k: 60  # RRF constant
+  query_rewrite: false  # LLM query rewriting (requires LLM calls)
+  hyde_enabled: false   # HyDE - Hypothetical Document Embedding (requires LLM calls)
 
 # =============================================================================
 # Rerank Configuration
@@ -86,11 +88,11 @@ observability:
 # Ingestion Configuration
 # =============================================================================
 ingestion:
-  chunk_size: 1000
-  chunk_overlap: 200
+  chunk_size: 1500      # 增大以携带更完整语义 (LLM 131K 窗口足够)
+  chunk_overlap: 300    # 20% 重叠率
   splitter: "structure"  # Options: recursive, structure
   batch_size: 100
-  pdf_parser: "layout"  # Options: markitdown, layout (layout = 版面分析 + OCR回退)
+  pdf_parser: "layout"  # Options: markitdown, layout, docling (docling = IBM 深度学习版面理解, 需 pip install .[docling])
   
   # Chunk Refiner Configuration (C5)
   chunk_refiner:
@@ -101,3 +103,25 @@ ingestion:
   metadata_enricher:
     use_llm: false  # Set to true to enable LLM-based enrichment (requires LLM config)
     # When use_llm is false or LLM call fails, falls back to rule-based enrichment
+  
+  # Context Enricher Configuration (Contextual Retrieval)
+  # Injects document filename prefix into embedding text for better retrieval
+  context_enricher:
+    enabled: true  # Set to false to disable context injection
+
+# =============================================================================
+# BGE-M3 Embedding Configuration (Optional)
+# =============================================================================
+# To use BGE-M3 instead of OpenAI/DashScope embedding:
+# 1. Install: pip install FlagEmbedding>=1.2.0
+# 2. Change embedding.provider to "bge-m3"
+# 3. Configure bge_m3 section below
+#
+# embedding:
+#   provider: "bge-m3"
+#   model: "BAAI/bge-m3"  # Required but ignored for BGE-M3
+#   dimensions: 1024      # BGE-M3 fixed dimension
+#   bge_m3:
+#     model: "BAAI/bge-m3"  # HuggingFace model name
+#     use_fp16: true        # Use FP16 for faster inference
+#     device: "auto"        # auto/cpu/cuda

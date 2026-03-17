@@ -12,7 +12,9 @@ Design Principles:
 - Deterministic: Same inputs produce same outputs
 """
 
+import asyncio
 from typing import List, Optional, Any
+
 from src.core.types import Chunk
 from src.libs.embedding.base_embedding import BaseEmbedding
 
@@ -99,8 +101,11 @@ class DenseEncoder:
         if not chunks:
             raise ValueError("Cannot encode empty chunks list")
         
-        # Extract text from chunks
-        texts = [chunk.text for chunk in chunks]
+        # Extract text from chunks, prioritizing embedding_text if available
+        texts = [
+            chunk.metadata.get("embedding_text") or chunk.text
+            for chunk in chunks
+        ]
         
         # Validate that all texts are non-empty
         for i, text in enumerate(texts):
@@ -171,3 +176,62 @@ class DenseEncoder:
         if num_chunks <= 0:
             return 0
         return (num_chunks + self.batch_size - 1) // self.batch_size
+    
+    async def encode_async(
+        self,
+        chunks: List[Chunk],
+        trace: Optional[Any] = None,
+        max_concurrency: int = 5,
+    ) -> List[List[float]]:
+        """Async version of encode() for concurrent batch processing.
+        
+        Processes multiple batches concurrently, significantly improving
+        throughput when encoding large numbers of chunks.
+        
+        Args:
+            chunks: List of Chunk objects to encode.
+            trace: Optional TraceContext for observability.
+            max_concurrency: Maximum concurrent API calls (default: 5).
+        
+        Returns:
+            List of dense vectors (one per chunk, in same order).
+        
+        Raises:
+            ValueError: If chunks list is empty.
+            RuntimeError: If embedding provider fails.
+        """
+        if not chunks:
+            raise ValueError("Cannot encode empty chunks list")
+        
+        # Extract text from chunks
+        texts = [
+            chunk.metadata.get("embedding_text") or chunk.text
+            for chunk in chunks
+        ]
+        
+        # Validate texts
+        for i, text in enumerate(texts):
+            if not text or not text.strip():
+                raise ValueError(
+                    f"Chunk at index {i} (id={chunks[i].id}) has empty text"
+                )
+        
+        # Create batches
+        batches: List[List[str]] = []
+        for i in range(0, len(texts), self.batch_size):
+            batches.append(texts[i:i + self.batch_size])
+        
+        # Process batches concurrently
+        all_vectors = await self.embedding.embed_batches_async(
+            text_batches=batches,
+            trace=trace,
+            max_concurrency=max_concurrency,
+        )
+        
+        # Validate output
+        if len(all_vectors) != len(chunks):
+            raise RuntimeError(
+                f"Vector count mismatch: got {len(all_vectors)} for {len(chunks)} chunks"
+            )
+        
+        return all_vectors
