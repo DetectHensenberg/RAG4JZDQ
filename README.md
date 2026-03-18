@@ -2,6 +2,8 @@
 
 > 模块化 RAG（检索增强生成）知识管理平台，支持多格式文档摄取、混合检索、智能问答，并通过 MCP 协议对外暴露标准化工具接口。
 
+**🎉 稳定版本 v1.0** — 开箱即用，已内置 API Key，朋友们可直接使用！
+
 ---
 
 ## 📖 目录
@@ -11,7 +13,7 @@
 - [核心功能](#-核心功能)
 - [快速开始](#-快速开始)
 - [配置说明](#-配置说明)
-- [Dashboard 使用指南](#-dashboard-使用指南)
+- [Web 界面使用指南](#-web-界面使用指南)
 - [MCP 集成](#-mcp-集成)
 - [项目结构](#-项目结构)
 - [开发指南](#-开发指南)
@@ -20,22 +22,24 @@
 
 ## 🏗️ 项目概述
 
-九洲 RAG 管理平台是一个面向企业级知识管理场景的检索增强生成系统，提供从文档摄取、向量化、混合检索到智能问答的完整链路。系统采用全链路可插拔架构，支持多种 LLM / Embedding / VectorStore Provider 一键切换，并通过 Streamlit Dashboard 提供可视化管理界面。
+九洲 RAG 管理平台是一个面向企业级知识管理场景的检索增强生成系统，提供从文档摄取、向量化、混合检索到智能问答的完整链路。系统采用全链路可插拔架构，支持多种 LLM / Embedding / VectorStore Provider 一键切换。
 
 ### 技术栈
 
 | 组件 | 技术选型 |
 |------|----------|
-| LLM | DashScope (qwen-plus) / OpenAI / Azure / DeepSeek / Ollama |
-| Embedding | DashScope (text-embedding-v3) / OpenAI / Azure / Ollama |
-| Vision LLM | DashScope (qwen-vl-plus) / OpenAI / Azure |
-| 向量数据库 | ChromaDB（本地持久化，WAL 模式） |
-| 稀疏检索 | BM25（jieba 中文分词 + 自研倒排索引） |
-| 文档解析 | MarkItDown（PDF / DOCX / MD）+ python-pptx（PPTX） |
-| 前端 | Streamlit Dashboard（8 页面管理平台） |
-| MCP 协议 | 官方 Python MCP SDK（stdio 传输） |
-| 配置管理 | YAML + .env 环境变量 |
-| 测试 | pytest（50+ 单元测试文件，三层测试体系） |
+| **后端** | FastAPI + Uvicorn |
+| **前端** | Vue 3 + Vite + TypeScript + Element Plus + TailwindCSS |
+| **LLM** | DashScope (qwen-plus) / OpenAI / Azure / DeepSeek / Ollama |
+| **Embedding** | DashScope (text-embedding-v3) / OpenAI / Azure / Ollama |
+| **Vision LLM** | DashScope (qwen-vl-plus) / OpenAI / Azure（图片描述生成） |
+| **向量数据库** | ChromaDB（本地持久化，WAL 模式） |
+| **稀疏检索** | BM25（jieba 中文分词 + 自研倒排索引） |
+| **重排序** | BGE-Reranker（本地 Cross-Encoder）/ LLM Rerank |
+| **文档解析** | MarkItDown + LayoutPDF（OCR）+ python-pptx |
+| **MCP 协议** | 官方 Python MCP SDK（stdio 传输） |
+| **配置管理** | YAML + .env 环境变量 |
+| **测试** | pytest（三层测试体系） |
 
 ---
 
@@ -43,8 +47,12 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Streamlit Dashboard                       │
-│  知识库问答 │ 知识库构建 │ 数据浏览 │ 摄取追踪 │ 评估面板  │
+│                Vue 3 Web Dashboard (暗黑毛玻璃风格)           │
+│  知识库问答 │ 知识库构建 │ 数据浏览 │ 系统配置 │ 评估面板   │
+└──────────────────────┬──────────────────────────────────────┘
+                       │ HTTP / SSE
+┌──────────────────────┼──────────────────────────────────────┐
+│                FastAPI Backend (Port 8001)                   │
 └──────────────────────┬──────────────────────────────────────┘
                        │
 ┌──────────────────────┼──────────────────────────────────────┐
@@ -137,44 +145,47 @@
 ### 1. 环境要求
 
 - Python 3.10+
-- DashScope API Key（或 OpenAI / Azure API Key）
+- Node.js 18+（前端构建）
+- **已内置 DashScope API Key，无需额外配置！**
 
 ### 2. 安装依赖
 
 ```bash
 git clone <repo-url>
 cd RAG
+
+# 安装 Python 依赖
 pip install -e .
-pip install "markitdown[docx]"  # DOCX 支持
+
+# 安装前端依赖（首次运行）
+cd web && npm install && cd ..
 ```
 
-### 3. 配置 API Key
+### 3. 一键启动
 
 ```bash
-# 复制配置模板
-cp config/settings.yaml.example config/settings.yaml
+# Windows — 同时启动前后端
+start_vue.bat
 
-# 创建 .env 文件（不会被提交到 Git）
-echo "DASHSCOPE_API_KEY=你的API密钥" > .env
+# 或分别启动：
+# 后端 (端口 8001)
+python -m uvicorn api.main:app --port 8001
+
+# 前端开发模式 (端口 5173)
+cd web && npm run dev
 ```
 
-### 4. 启动 Dashboard
+访问地址：
+- **前端界面**: `http://localhost:5173`
+- **API 文档**: `http://localhost:8001/api/docs`
 
-```bash
-# Windows
-start_dashboard.bat
-
-# Linux / macOS
-bash start_dashboard.sh
-```
-
-访问 `http://localhost:8501` 即可使用。
-
-### 5. 使用 MCP Server
+### 4. 使用 MCP Server（可选）
 
 ```bash
 python main.py
 ```
+
+可对接 VS Code Copilot / Claude Desktop 等 AI 助手。
 
 ---
 
@@ -218,29 +229,40 @@ ingestion:
 
 ---
 
-## 📊 Dashboard 使用指南
-
-### 知识库构建
-
-1. 进入 **知识库构建** 页面
-2. 设置知识库文件夹路径（支持递归扫描子文件夹）
-3. 选择文件类型（PDF / PPTX / DOCX / MD）
-4. 点击 **开始构建**，实时查看摄取进度
-5. 支持 **停止摄取** 按钮，当前文件完成后安全停止
+## 📊 Web 界面使用指南
 
 ### 知识库问答
 
 1. 进入 **知识库问答** 页面
-2. 输入问题，系统自动检索知识库并流式生成回答
-3. 侧边栏可调整检索数量、最大 Token 等参数
-4. 支持上传文档与知识库联合问答
-5. 历史记录自动持久化，支持清空
+2. 输入问题，系统自动检索知识库并**流式生成回答**
+3. 支持 **Mermaid 流程图**自动渲染
+4. 右侧显示**检索来源**和**相关图片**
+5. 历史记录自动持久化
+
+### 知识库构建
+
+1. 进入 **知识库构建** 页面
+2. 输入知识库文件夹路径，点击 **扫描**
+3. 确认文件列表后点击 **开始构建**
+4. 实时查看摄取进度（支持**断线重连**，切换页面不丢失进度）
+5. 支持 **停止** 按钮安全中断
+
+### 数据浏览
+
+- 查看已摄取文档列表
+- 支持按集合筛选
+- 可删除单个文档
+
+### 系统配置
+
+- 在线修改 LLM / Embedding / 检索参数
+- 无需重启即可生效
 
 ### 安全关闭
 
-- 摄取过程中可点击 **⏹️ 停止摄取** 按钮安全停止
+- 摄取过程中可点击 **停止** 按钮安全停止
 - 系统注册了 `atexit` 优雅关闭，Ctrl+C 时自动执行 WAL checkpoint
-- 避免在 `💾 Stage 6: Storage` 阶段强制终止进程
+- 避免在存储阶段强制终止进程
 
 ---
 
@@ -282,47 +304,45 @@ ingestion:
 ## 📁 项目结构
 
 ```
+├── api/                        # FastAPI 后端
+│   ├── main.py                 # 应用入口
+│   ├── routers/                # API 路由 (chat, ingest, knowledge, config)
+│   ├── models.py               # 请求/响应模型
+│   └── deps.py                 # 依赖注入
+├── web/                        # Vue 3 前端
+│   ├── src/
+│   │   ├── views/              # 页面组件 (ChatView, KnowledgeBase, etc.)
+│   │   ├── composables/        # 组合式函数 (useSSE, useApi)
+│   │   └── stores/             # Pinia 状态管理
+│   ├── dist/                   # 构建产物（生产模式）
+│   └── package.json
 ├── config/
-│   ├── settings.yaml           # 运行配置（gitignore）
-│   └── settings.yaml.example   # 配置模板
+│   └── settings.yaml           # 运行配置
 ├── src/
 │   ├── core/                   # 核心层
-│   │   ├── types.py            # 全局数据契约 (Document, Chunk, RetrievalResult)
-│   │   ├── settings.py         # 配置加载与校验
-│   │   ├── query_engine/       # 检索引擎 (Dense + Sparse + RRF + Rerank)
-│   │   ├── response/           # 响应构建
-│   │   └── trace/              # 追踪上下文
-│   ├── ingestion/              # 摄取管道
-│   │   ├── pipeline.py         # 6 阶段编排器
+│   │   ├── types.py            # 全局数据契约
+│   │   ├── settings.py         # 配置加载
+│   │   └── query_engine/       # 混合检索引擎
+│   ├── ingestion/              # 摄取管道 (6 阶段)
+│   │   ├── pipeline.py         # 编排器
 │   │   ├── chunking/           # 文档分块
 │   │   ├── embedding/          # Dense + Sparse 编码
-│   │   ├── storage/            # ChromaDB + BM25 + Image 存储
-│   │   └── transform/          # Chunk 精炼 + 元数据增强 + 图片描述
-│   ├── libs/                   # 基础设施层（可插拔 Provider）
-│   │   ├── llm/                # LLM 工厂 + 5 个 Provider
-│   │   ├── embedding/          # Embedding 工厂 + 3 个 Provider
-│   │   ├── loader/             # 文档加载器 (PDF, PPTX, DOCX, MD)
-│   │   ├── vector_store/       # 向量存储工厂 (ChromaDB)
-│   │   ├── splitter/           # 文本分割器
-│   │   └── reranker/           # 重排序器 (Cross-Encoder, LLM)
-│   ├── mcp_server/             # MCP 协议服务
-│   │   ├── server.py           # stdio 入口
-│   │   ├── protocol_handler.py # JSON-RPC 协议处理
-│   │   └── tools/              # 3 个 MCP 工具实现
-│   └── observability/          # 可观测性
-│       ├── logger.py           # 结构化日志 + API Key 脱敏
-│       ├── dashboard/          # Streamlit Dashboard (8 页面)
-│       └── evaluation/         # 评估框架
-├── tests/                      # 三层测试体系 (unit / integration / e2e)
+│   │   ├── storage/            # ChromaDB + BM25 存储
+│   │   └── transform/          # Chunk 精炼 + 图片描述
+│   ├── libs/                   # 可插拔 Provider 层
+│   │   ├── llm/                # LLM 工厂
+│   │   ├── embedding/          # Embedding 工厂
+│   │   ├── loader/             # 文档加载器
+│   │   ├── vector_store/       # 向量存储
+│   │   └── reranker/           # 重排序器
+│   └── mcp_server/             # MCP 协议服务
+├── tests/                      # 三层测试体系
 ├── data/                       # 运行时数据（gitignore）
-│   ├── db/                     # ChromaDB + BM25 + SQLite 索引
+│   ├── db/                     # ChromaDB + BM25 索引
 │   └── images/                 # 提取的文档图片
-├── log/                        # 工程日志与评审报告
-├── scripts/maintenance/        # 数据库维护脚本
-├── .env                        # API Key（gitignore）
-├── pyproject.toml              # 项目配置与依赖
-├── start_dashboard.bat         # Windows 启动脚本
-└── start_dashboard.sh          # Linux/macOS 启动脚本
+├── .env                        # API Key（已内置）
+├── start_vue.bat               # Windows 一键启动
+└── pyproject.toml              # 项目配置
 ```
 
 ---

@@ -51,7 +51,7 @@ coverage.xml
 *.pot
 
 # Environments
-.env
+# .env  # 已移除排除，允许朋友使用内置 API Key
 .venv
 env/
 venv/
@@ -105,7 +105,7 @@ traces.jsonl
 .github/skills/auto-coder/.spec_hash
 
 # Secrets
-.env
+# .env  # 已移除排除
 .env.local
 .env.*.local
 .encrypt_key

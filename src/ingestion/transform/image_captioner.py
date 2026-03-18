@@ -27,7 +27,7 @@ logger = get_logger(__name__)
 IMAGE_PLACEHOLDER_PATTERN = re.compile(r'\[IMAGE:\s*([^\]]+)\]')
 
 # Default max parallel workers for Vision API calls
-DEFAULT_MAX_WORKERS = 3  # Lower than text LLM due to higher cost/latency
+DEFAULT_MAX_WORKERS = 8  # Parallel Vision API calls for throughput
 
 
 class ImageCaptioner(BaseTransform):
@@ -255,8 +255,13 @@ class ImageCaptioner(BaseTransform):
         if not images_to_caption:
             return
         
-        max_workers = min(DEFAULT_MAX_WORKERS, len(images_to_caption))
-        logger.debug(f"Generating captions for {len(images_to_caption)} images (max_workers={max_workers})")
+        total = len(images_to_caption)
+        max_workers = min(DEFAULT_MAX_WORKERS, total)
+        logger.info(f"Generating captions for {total} images (max_workers={max_workers})")
+        
+        completed = 0
+        succeeded = 0
+        failed = 0
         
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {
@@ -266,9 +271,19 @@ class ImageCaptioner(BaseTransform):
             
             for future in as_completed(futures):
                 img_id = futures[future]
+                completed += 1
                 try:
                     caption = future.result()
                     if caption:
-                        logger.debug(f"Caption generated for {img_id}")
+                        succeeded += 1
+                    else:
+                        failed += 1
                 except Exception as e:
+                    failed += 1
                     logger.error(f"Failed to generate caption for {img_id}: {e}")
+                
+                # Progress log every 10 images or at completion
+                if completed % 10 == 0 or completed == total:
+                    logger.info(f"  Caption progress: {completed}/{total} (ok={succeeded}, fail={failed})")
+        
+        logger.info(f"Caption generation done: {succeeded} succeeded, {failed} failed out of {total}")

@@ -252,7 +252,14 @@ async function startIngest() {
       `/api/knowledge/progress/${taskId.value}`,
       {},
       (event) => {
-        if (event.type === 'progress') {
+        if (event.type === 'heartbeat') {
+          // Ignore heartbeat, just keeps connection alive
+          return
+        } else if (event.type === 'reconnect') {
+          // Reconnected to running task, restore progress
+          progressPct.value = Math.round((event.current / event.total) * 100)
+          progressText.value = `[${event.current}/${event.total}] ${event.file} (已恢复连接)`
+        } else if (event.type === 'progress') {
           progressPct.value = Math.round((event.current / event.total) * 100)
           progressText.value = `[${event.current}/${event.total}] ${event.file}`
         } else if (event.type === 'file_done') {
@@ -265,6 +272,9 @@ async function startIngest() {
           ingesting.value = false
         } else if (event.type === 'stopped') {
           logs.value.push(`⏹ 已停止 (${event.completed}/${event.total})`)
+          ingesting.value = false
+        } else if (event.type === 'error') {
+          logs.value.push(`❌ 任务错误: ${event.message}`)
           ingesting.value = false
         }
       },

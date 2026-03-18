@@ -109,20 +109,21 @@ async def startup_event():
     start = time.time()
     
     try:
-        from api.deps import get_hybrid_search, get_vector_store
+        from api.deps import get_hybrid_search
         
-        # Initialize default collection
-        get_hybrid_search("default")
+        # Initialize default collection (this also initializes vector store)
+        hybrid = get_hybrid_search("default")
         print("[startup] ChromaStore initialized, HNSW backup completed")
         
-        # Warm up HNSW index with dummy query
+        # Warm up HNSW index with dummy query via dense retriever
         try:
-            store = get_vector_store("default")
-            # Create dummy vector matching embedding dimension
-            dim = getattr(store, '_dimension', 1024)
-            dummy_vector = [0.0] * dim
-            store.query(dummy_vector, top_k=1)
-            print(f"[startup] HNSW index warmed up (dim={dim})")
+            dense = hybrid.dense_retriever
+            if dense and dense.vector_store:
+                store = dense.vector_store
+                dim = getattr(store, 'dimension', 1024)
+                dummy_vector = [0.0] * dim
+                store.query(dummy_vector, top_k=1)
+                print(f"[startup] HNSW index warmed up (dim={dim})")
         except Exception as e:
             print(f"[startup] HNSW warmup skipped: {e}")
         

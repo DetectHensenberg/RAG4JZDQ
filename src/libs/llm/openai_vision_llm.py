@@ -323,13 +323,18 @@ class OpenAIVisionLLM(BaseVisionLLM):
                 f"[OpenAI Vision] Image encoding error: {e}"
             ) from e
     
+    # Timeout and retry configuration
+    API_TIMEOUT = 120.0  # seconds (Vision API can be slow)
+    MAX_RETRIES = 2  # retry up to 2 times on timeout/network errors
+    RETRY_DELAY = 3.0  # seconds between retries
+    
     def _call_api(
         self,
         messages: list[dict],
         temperature: float,
         max_tokens: int,
     ) -> dict:
-        """Make HTTP request to the Vision API.
+        """Make HTTP request to the Vision API with retry.
         
         Args:
             messages: List of API-formatted messages.
@@ -340,9 +345,10 @@ class OpenAIVisionLLM(BaseVisionLLM):
             API response as dictionary.
         
         Raises:
-            OpenAIVisionLLMError: If API call fails.
+            OpenAIVisionLLMError: If API call fails after all retries.
         """
         import httpx
+        import time
         
         url = f"{self.base_url.rstrip('/')}/chat/completions"
         if self.api_version:
@@ -366,25 +372,51 @@ class OpenAIVisionLLM(BaseVisionLLM):
             "max_tokens": max_tokens,
         }
         
-        try:
-            with httpx.Client(timeout=60.0) as client:
-                response = client.post(url, json=payload, headers=headers)
-                
-                if response.status_code != 200:
-                    error_detail = self._parse_error_response(response)
-                    raise OpenAIVisionLLMError(
-                        f"[OpenAI Vision] API error (HTTP {response.status_code}): {error_detail}"
-                    )
-                
-                return response.json()
-        except httpx.TimeoutException as e:
-            raise OpenAIVisionLLMError(
-                "[OpenAI Vision] Request timed out after 60 seconds"
-            ) from e
-        except httpx.RequestError as e:
-            raise OpenAIVisionLLMError(
-                f"[OpenAI Vision] Connection failed: {type(e).__name__}: {e}"
-            ) from e
+        last_error: Exception | None = None
+        
+        for attempt in range(1 + self.MAX_RETRIES):
+            try:
+                with httpx.Client(timeout=self.API_TIMEOUT) as client:
+                    response = client.post(url, json=payload, headers=headers)
+                    
+                    if response.status_code != 200:
+                        error_detail = self._parse_error_response(response)
+                        # Don't retry on client errors (4xx) except 429
+                        if 400 <= response.status_code < 500 and response.status_code != 429:
+                            raise OpenAIVisionLLMError(
+                                f"[OpenAI Vision] API error (HTTP {response.status_code}): {error_detail}"
+                            )
+                        # Retry on server errors (5xx) and rate limit (429)
+                        last_error = OpenAIVisionLLMError(
+                            f"[OpenAI Vision] API error (HTTP {response.status_code}): {error_detail}"
+                        )
+                        if attempt < self.MAX_RETRIES:
+                            time.sleep(self.RETRY_DELAY * (attempt + 1))
+                            continue
+                        raise last_error
+                    
+                    return response.json()
+                    
+            except httpx.TimeoutException as e:
+                last_error = OpenAIVisionLLMError(
+                    f"[OpenAI Vision] Request timed out after {self.API_TIMEOUT}s (attempt {attempt + 1}/{1 + self.MAX_RETRIES})"
+                )
+                last_error.__cause__ = e
+                if attempt < self.MAX_RETRIES:
+                    time.sleep(self.RETRY_DELAY)
+                    continue
+            except httpx.RequestError as e:
+                last_error = OpenAIVisionLLMError(
+                    f"[OpenAI Vision] Connection failed: {type(e).__name__}: {e}"
+                )
+                last_error.__cause__ = e
+                if attempt < self.MAX_RETRIES:
+                    time.sleep(self.RETRY_DELAY)
+                    continue
+            except OpenAIVisionLLMError:
+                raise
+        
+        raise last_error  # type: ignore
     
     def _parse_error_response(self, response: Any) -> str:
         """Parse error details from API response."""
