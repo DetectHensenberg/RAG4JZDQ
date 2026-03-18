@@ -363,8 +363,8 @@ async def chat_stream(req: ChatRequest):
         except Exception as e:
             logger.warning(f"Failed to extract images: {e}")
 
-        if images:
-            yield f"data: {json.dumps({'type': 'images', 'data': images}, ensure_ascii=False)}\n\n"
+        # Always send images event (even if empty) so frontend can update correctly
+        yield f"data: {json.dumps({'type': 'images', 'data': images}, ensure_ascii=False)}\n\n"
 
         yield f"data: {json.dumps({'type': 'done', 'answer': full_answer}, ensure_ascii=False)}\n\n"
 

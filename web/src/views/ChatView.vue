@@ -224,6 +224,7 @@ async function sendQuestion() {
   streaming.value = true
   streamBuffer.value = ''
   references.value = []
+  images.value = []
   scrollToBottom()
 
   await stream(
