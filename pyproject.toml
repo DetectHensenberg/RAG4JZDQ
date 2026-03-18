@@ -24,16 +24,37 @@ classifiers = [
 ]
 
 dependencies = [
+    # 核心框架
+    "fastapi>=0.115.0",
+    "uvicorn>=0.34.0",
+    "pydantic>=2.0.0",
+    
+    # 配置与工具
     "pyyaml~=6.0.2",
-    "langchain-text-splitters>=0.3.0",
-    "chromadb~=1.4.1",
-    "mcp~=1.26.0",
-    "jieba~=0.42.1",
-    "markitdown[pdf]~=0.1.5",
-    "pymupdf>=1.24.0",  # PDF 图片提取 + OCR 支持
-    "streamlit~=1.54.0",
-    "openai~=1.109.1",
     "httpx~=0.28.1",
+    
+    # LLM & Embedding
+    "openai~=1.109.1",
+    
+    # 向量数据库 & 检索
+    "chromadb~=1.4.1",
+    "langchain-text-splitters>=0.3.0",
+    "jieba~=0.42.1",
+    
+    # 文档解析
+    "markitdown[pdf]~=0.1.5",
+    "pymupdf>=1.24.0",           # PDF 图片提取
+    "python-pptx>=1.0.0",        # PPTX 解析
+    "pillow>=10.0.0",            # 图片处理
+    
+    # 重排序
+    "sentence-transformers>=3.0.0",  # Cross-Encoder 重排序
+    
+    # MCP 协议
+    "mcp~=1.26.0",
+    
+    # 可选功能
+    "streamlit~=1.54.0",
     "ragas>=0.1.0",
     "datasets>=2.0.0",
 ]

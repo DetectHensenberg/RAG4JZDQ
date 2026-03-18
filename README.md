@@ -154,15 +154,16 @@
 git clone <repo-url>
 cd RAG
 
-# 安装 Python 依赖
+# 安装所有 Python 依赖（包含 PDF/PPTX 解析、重排序等）
 pip install -e .
-
-# 安装 PyMuPDF（PDF 图片提取 + OCR，处理纯图片型 PDF 必需）
-pip install pymupdf
 
 # 安装前端依赖（首次运行）
 cd web && npm install && cd ..
 ```
+
+> **可选**：安装 Tesseract OCR 以支持扫描件 PDF 文字识别
+> - Windows: 下载安装 [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki)
+> - 安装后运行: `pip install pytesseract`
 
 ### 3. 一键启动
 
