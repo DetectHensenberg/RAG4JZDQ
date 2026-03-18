@@ -46,6 +46,7 @@ dependencies = [
     "pymupdf>=1.24.0",           # PDF 图片提取
     "python-pptx>=1.0.0",        # PPTX 解析
     "pillow>=10.0.0",            # 图片处理
+    "pytesseract>=0.3.10",       # OCR (需安装 Tesseract 二进制)
     
     # 重排序
     "sentence-transformers>=3.0.0",  # Cross-Encoder 重排序

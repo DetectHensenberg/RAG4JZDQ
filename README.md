@@ -161,9 +161,9 @@ pip install -e .
 cd web && npm install && cd ..
 ```
 
-> **可选**：安装 Tesseract OCR 以支持扫描件 PDF 文字识别
-> - Windows: 下载安装 [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki)
-> - 安装后运行: `pip install pytesseract`
+> **注意**：OCR 功能需要安装 Tesseract 二进制程序
+> - Windows: 下载安装 [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki)（安装时勾选中文语言包）
+> - 默认路径: `C:\Program Files\Tesseract-OCR\tesseract.exe`
 
 ### 3. 一键启动
 
