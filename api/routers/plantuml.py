@@ -121,9 +121,14 @@ async def render_plantuml(req: PlantUMLRequest):
             return Response(content=resp.content, media_type=content_type)
             
     except httpx.TimeoutException:
+        logger.debug("PlantUML render timeout")
         return Response(content="PlantUML render timeout", status_code=504)
+    except httpx.ConnectError:
+        # 网络不通时静默处理，不刷屏
+        logger.debug("PlantUML service unreachable (network issue)")
+        return Response(content="PlantUML service unreachable", status_code=503)
     except Exception as e:
-        logger.exception(f"PlantUML render error: {e}")
+        logger.warning(f"PlantUML render error: {e}")
         return Response(content=str(e), status_code=500)
 
 
