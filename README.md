@@ -157,6 +157,9 @@ cd RAG
 # 安装 Python 依赖
 pip install -e .
 
+# 安装 PyMuPDF（PDF 图片提取 + OCR，处理纯图片型 PDF 必需）
+pip install pymupdf
+
 # 安装前端依赖（首次运行）
 cd web && npm install && cd ..
 ```
