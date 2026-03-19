@@ -48,6 +48,7 @@ import { computed } from 'vue'
 import { useRoute } from 'vue-router'
 import {
   ChatDotRound,
+  Document,
   FolderOpened,
   DataAnalysis,
   Search,
@@ -61,6 +62,7 @@ const currentRoute = computed(() => route.path)
 
 const mainItems = [
   { path: '/', title: '知识问答', icon: ChatDotRound },
+  { path: '/bid', title: '标书助手', icon: Document },
   { path: '/knowledge', title: '知识库构建', icon: FolderOpened },
   { path: '/browser', title: '数据浏览', icon: Search },
 ]

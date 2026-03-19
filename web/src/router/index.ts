@@ -10,6 +10,12 @@ const router = createRouter({
       meta: { title: '知识库问答', icon: 'ChatDotRound' },
     },
     {
+      path: '/bid',
+      name: 'bid',
+      component: () => import('@/views/BidAssistant.vue'),
+      meta: { title: '标书助手', icon: 'Document' },
+    },
+    {
       path: '/knowledge',
       name: 'knowledge',
       component: () => import('@/views/KnowledgeBase.vue'),

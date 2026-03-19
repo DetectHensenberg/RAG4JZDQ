@@ -237,8 +237,10 @@ async function sendQuestion() {
       } else if (event.type === 'references') {
         references.value = event.data || []
       } else if (event.type === 'images') {
+        console.log('[DEBUG] images event received:', event.data?.length, 'images')
         images.value = event.data || []
       } else if (event.type === 'done') {
+        console.log('[DEBUG] done event, images.length =', images.value.length)
         messages.value.push({ role: 'assistant', content: event.answer || streamBuffer.value })
         streamBuffer.value = ''
         streaming.value = false

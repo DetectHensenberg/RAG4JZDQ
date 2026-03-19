@@ -364,8 +364,10 @@ async def chat_stream(req: ChatRequest):
             logger.warning(f"Failed to extract images: {e}")
 
         # Always send images event (even if empty) so frontend can update correctly
+        logger.info(f"[DEBUG] Sending images event with {len(images)} images")
         yield f"data: {json.dumps({'type': 'images', 'data': images}, ensure_ascii=False)}\n\n"
 
+        logger.info(f"[DEBUG] Sending done event")
         yield f"data: {json.dumps({'type': 'done', 'answer': full_answer}, ensure_ascii=False)}\n\n"
 
         # Save to L3 answer cache (for FAQ-type repeated queries)

@@ -96,10 +96,12 @@ web/dist/
 
 # Project-specific
 data/
+data - */
 cache/
 logs/
 *.log
 traces.jsonl
+docs/背调/
 
 # Auto-coder skill cache
 .github/skills/auto-coder/.spec_hash
