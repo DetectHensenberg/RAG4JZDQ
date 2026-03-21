@@ -36,6 +36,10 @@ class IngestRequest(BaseModel):
     file_types: List[str] = [".pdf", ".pptx", ".docx", ".md", ".txt"]
     force: bool = False
     skip_llm_transform: bool = False
+    product_vendor: str = ""
+    product_model: str = ""
+    product_category: str = ""
+    product_device: str = ""
 
 
 class ConfigUpdateRequest(BaseModel):

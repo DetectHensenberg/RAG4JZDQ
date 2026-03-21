@@ -173,6 +173,60 @@
         </div>
       </section>
 
+      <!-- Company Documents -->
+      <section class="config-section company-docs-section" style="--delay: 5">
+        <div class="section-header">
+          <el-icon :size="18"><FolderOpened /></el-icon>
+          <span>我司资料设置</span>
+          <span v-if="companyDocs.length" class="status-badge status-success">{{ companyDocs.length }} 份文件</span>
+          <span v-else class="status-badge status-warning">未导入</span>
+        </div>
+        <div class="section-body">
+          <p class="section-desc">上传资格性响应文件PDF，系统将自动解析并提取各独立文件内容，用于标书编写时自动匹配填充。</p>
+          
+          <!-- Upload area -->
+          <div class="upload-area" v-if="!importing">
+            <input type="file" ref="companyDocInput" accept=".pdf" @change="onCompanyDocSelect" hidden />
+            <button class="upload-btn" @click="($refs.companyDocInput as any).click()">
+              <el-icon :size="20"><Upload /></el-icon>
+              <span>上传资格性响应文件 PDF</span>
+            </button>
+          </div>
+          <div v-else class="importing-box">
+            <el-icon class="is-loading" :size="20"><Loading /></el-icon>
+            <span>正在解析PDF，识别文件结构...</span>
+          </div>
+
+          <!-- Document list -->
+          <div v-if="companyDocs.length" class="docs-list">
+            <div class="docs-header">
+              <span>已导入文件</span>
+              <button class="clear-btn" @click="clearCompanyDocs" :disabled="clearingDocs">
+                <el-icon :size="14"><Delete /></el-icon>
+                <span>清空全部</span>
+              </button>
+            </div>
+            <div class="docs-grid">
+              <div v-for="doc in companyDocs" :key="doc.id" class="doc-card" @click="showDocDetail(doc)">
+                <div class="doc-icon">
+                  <el-icon :size="20"><Document /></el-icon>
+                </div>
+                <div class="doc-info">
+                  <div class="doc-name">{{ doc.doc_name }}</div>
+                  <div class="doc-meta">
+                    <span class="doc-category">{{ categoryLabel(doc.category) }}</span>
+                    <span v-if="doc.page_start">P{{ doc.page_start }}-{{ doc.page_end }}</span>
+                  </div>
+                </div>
+                <button class="doc-delete" @click.stop="deleteDoc(doc.id)" title="删除">
+                  <el-icon :size="14"><Close /></el-icon>
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- Actions -->
       <div class="config-actions">
         <button class="save-btn" @click="saveConfig" :disabled="saving">
@@ -210,10 +264,11 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { 
   Key, CircleCheck, Connection, Loading, Cpu, DataAnalysis, 
-  Search, Upload, Check, RefreshRight, Delete, Warning 
+  Search, Upload, Check, RefreshRight, Delete, Warning,
+  FolderOpened, Document, Close
 } from '@element-plus/icons-vue'
 import api from '@/composables/useApi'
 
@@ -225,6 +280,12 @@ const saving = ref(false)
 const testResult = ref<{ ok: boolean; message: string } | null>(null)
 const useLlmRefine = ref(false)
 const clearing = ref(false)
+
+// Company documents
+const companyDocs = ref<any[]>([])
+const importing = ref(false)
+const clearingDocs = ref(false)
+const companyDocInput = ref<HTMLInputElement | null>(null)
 
 // Presets
 const llmPresets = [
@@ -358,7 +419,101 @@ async function confirmClearData() {
   }
 }
 
-onMounted(loadConfig)
+// ── Company Documents ───────────────────────────────────
+
+const categoryLabels: Record<string, string> = {
+  certificate: '资质证书',
+  financial: '财务类',
+  declaration: '声明承诺',
+  license: '证照类',
+  other: '其他',
+}
+
+function categoryLabel(cat: string) {
+  return categoryLabels[cat] || cat
+}
+
+async function loadCompanyDocs() {
+  try {
+    const { data } = await api.get('/bid-document/company-docs')
+    if (data.ok) {
+      companyDocs.value = data.docs || []
+    }
+  } catch (e) {
+    console.error('Load company docs failed:', e)
+  }
+}
+
+async function onCompanyDocSelect(e: Event) {
+  const file = (e.target as HTMLInputElement).files?.[0]
+  if (!file) return
+
+  importing.value = true
+  const formData = new FormData()
+  formData.append('file', file)
+
+  try {
+    const { data } = await api.post('/bid-document/company-docs/import', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+      timeout: 180000,
+    })
+    if (data.ok) {
+      companyDocs.value = data.docs || []
+      ElMessage.success(data.message || `成功导入 ${data.docs?.length || 0} 个文件`)
+    } else {
+      ElMessage.error(data.message || '导入失败')
+    }
+  } catch (err: any) {
+    ElMessage.error(err.message || '导入失败')
+  } finally {
+    importing.value = false
+    if (companyDocInput.value) companyDocInput.value.value = ''
+  }
+}
+
+async function deleteDoc(docId: number) {
+  try {
+    await ElMessageBox.confirm('确定删除此文件？', '确认删除', { type: 'warning' })
+    const { data } = await api.delete(`/bid-document/company-docs/${docId}`)
+    if (data.ok) {
+      companyDocs.value = companyDocs.value.filter(d => d.id !== docId)
+      ElMessage.success('已删除')
+    } else {
+      ElMessage.error(data.message || '删除失败')
+    }
+  } catch {
+    // cancelled
+  }
+}
+
+async function clearCompanyDocs() {
+  try {
+    await ElMessageBox.confirm('确定清空所有我司资料？', '确认清空', { type: 'warning' })
+    clearingDocs.value = true
+    // Delete one by one since there's no clear all API
+    for (const doc of companyDocs.value) {
+      await api.delete(`/bid-document/company-docs/${doc.id}`)
+    }
+    companyDocs.value = []
+    ElMessage.success('已清空')
+  } catch {
+    // cancelled
+  } finally {
+    clearingDocs.value = false
+  }
+}
+
+function showDocDetail(doc: any) {
+  ElMessageBox.alert(doc.content?.slice(0, 500) || '(无内容)', doc.doc_name, {
+    confirmButtonText: '关闭',
+    customClass: 'doc-detail-dialog',
+  })
+}
+
+onMounted(() => {
+  loadConfig()
+  loadCompanyDocs()
+})
 </script>
 
 <style scoped>
@@ -759,5 +914,179 @@ onMounted(loadConfig)
 .danger-btn:disabled {
   opacity: 0.5;
   cursor: not-allowed;
+}
+
+/* Company Documents Section */
+.company-docs-section .section-body {
+  padding: var(--sp-5);
+}
+
+.section-desc {
+  font-size: var(--fs-sm);
+  color: var(--c-text-tertiary);
+  margin: 0 0 var(--sp-4);
+}
+
+.upload-area {
+  margin-bottom: var(--sp-4);
+}
+
+.upload-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-2);
+  width: 100%;
+  height: 80px;
+  background: var(--c-surface);
+  border: 2px dashed var(--c-border);
+  border-radius: var(--radius);
+  color: var(--c-text-secondary);
+  font-size: var(--fs-sm);
+  cursor: pointer;
+  transition: all var(--duration) var(--ease);
+}
+
+.upload-btn:hover {
+  background: var(--c-surface-hover);
+  border-color: var(--c-accent);
+  color: var(--c-accent);
+}
+
+.importing-box {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--sp-3);
+  height: 80px;
+  background: var(--c-surface);
+  border-radius: var(--radius);
+  color: var(--c-text-secondary);
+  font-size: var(--fs-sm);
+}
+
+.docs-list {
+  margin-top: var(--sp-4);
+}
+
+.docs-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--sp-3);
+  font-size: var(--fs-sm);
+  color: var(--c-text-secondary);
+}
+
+.clear-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  padding: 4px var(--sp-2);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--c-text-tertiary);
+  font-size: var(--fs-xs);
+  cursor: pointer;
+  transition: all var(--duration) var(--ease);
+}
+
+.clear-btn:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
+}
+
+.clear-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.docs-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  gap: var(--sp-3);
+}
+
+.doc-card {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--sp-3);
+  padding: var(--sp-3);
+  background: var(--c-surface);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: all var(--duration) var(--ease);
+}
+
+.doc-card:hover {
+  background: var(--c-surface-hover);
+  border-color: var(--c-border-hover);
+}
+
+.doc-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  background: var(--glass-bg);
+  border-radius: var(--radius-xs);
+  color: var(--c-accent);
+  flex-shrink: 0;
+}
+
+.doc-info {
+  flex: 1;
+  min-width: 0;
+}
+
+.doc-name {
+  font-size: var(--fs-sm);
+  font-weight: 500;
+  color: var(--c-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.doc-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+  margin-top: var(--sp-1);
+  font-size: var(--fs-xs);
+  color: var(--c-text-tertiary);
+}
+
+.doc-category {
+  padding: 1px var(--sp-1);
+  background: var(--glass-bg);
+  border-radius: 2px;
+}
+
+.doc-delete {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-xs);
+  color: var(--c-text-tertiary);
+  cursor: pointer;
+  opacity: 0;
+  transition: all var(--duration) var(--ease);
+}
+
+.doc-card:hover .doc-delete {
+  opacity: 1;
+}
+
+.doc-delete:hover {
+  background: rgba(239, 68, 68, 0.1);
+  color: #ef4444;
 }
 </style>

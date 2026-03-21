@@ -56,6 +56,10 @@ class ChromaBackupManager:
           - index_metadata.pickle exists and is > 100 bytes
         """
         for hnsw_dir in self._find_hnsw_dirs():
+            # Skip completely empty directories created by ChromaDB for empty collections
+            if not any(hnsw_dir.iterdir()):
+                continue
+                
             header = hnsw_dir / "header.bin"
             data = hnsw_dir / "data_level0.bin"
             meta = hnsw_dir / "index_metadata.pickle"

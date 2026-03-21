@@ -23,6 +23,7 @@
     <div class="bid-body">
       <BidAuthVerifier v-if="activeModule === 'auth-verify'" />
       <BidAchievementSearch v-else-if="activeModule === 'achievement'" />
+      <BidDocumentWriter v-else-if="activeModule === 'document-writer'" />
       <BidReviewAssistant v-else-if="activeModule === 'review'" />
       <div v-else class="coming-soon">
         <el-icon :size="48" style="color:var(--c-text-tertiary)"><SetUp /></el-icon>
@@ -38,6 +39,7 @@ import { ref, computed } from 'vue'
 import { SetUp } from '@element-plus/icons-vue'
 import BidAuthVerifier from '@/components/bid/BidAuthVerifier.vue'
 import BidAchievementSearch from '@/components/bid/BidAchievementSearch.vue'
+import BidDocumentWriter from '@/components/bid/BidDocumentWriter.vue'
 import BidReviewAssistant from '@/components/bid/BidReviewAssistant.vue'
 
 interface BidModule {
@@ -49,7 +51,7 @@ interface BidModule {
 const modules: BidModule[] = [
   { key: 'auth-verify', label: '需求1：产品技术资料真伪性辨别助手' },
   { key: 'achievement', label: '需求2：业绩库智能检索助手' },
-  { key: 'compliance',  label: '需求3：招标合规性检查助手', disabled: true },
+  { key: 'document-writer', label: '需求3：标书商务文件编写助手' },
   { key: 'review',      label: '需求4：标书智能化审查助手' },
 ]
 

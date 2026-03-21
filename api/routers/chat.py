@@ -14,7 +14,7 @@ from typing import Any, Dict, List
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
 
-from api.db import get_connection
+from api.db import get_connection, get_async_connection
 from api.deps import get_hybrid_search, get_llm, get_settings
 from api.models import ChatRequest
 from src.core.settings import resolve_path
@@ -230,6 +230,19 @@ def _init_history_db() -> None:
         conn.commit()
 
 
+async def _ainit_history_db() -> None:
+    _HISTORY_DB.parent.mkdir(parents=True, exist_ok=True)
+    async with get_async_connection(_HISTORY_DB) as conn:
+        await conn.execute("""CREATE TABLE IF NOT EXISTS qa_history (
+            id INTEGER PRIMARY KEY,
+            question TEXT NOT NULL,
+            answer TEXT NOT NULL,
+            references_json TEXT DEFAULT '[]',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )""")
+        await conn.commit()
+
+
 def _save_history(question: str, answer: str, refs: list) -> None:
     try:
         _init_history_db()
@@ -243,11 +256,24 @@ def _save_history(question: str, answer: str, refs: list) -> None:
         logger.warning(f"Failed to save QA history: {e}")
 
 
+async def _asave_history(question: str, answer: str, refs: list) -> None:
+    try:
+        await _ainit_history_db()
+        async with get_async_connection(_HISTORY_DB) as conn:
+            await conn.execute(
+                "INSERT INTO qa_history (id, question, answer, references_json) VALUES (?,?,?,?)",
+                (int(time.time() * 1000), question, answer, json.dumps(refs, ensure_ascii=False)),
+            )
+            await conn.commit()
+    except Exception as e:
+        logger.warning(f"Failed to save QA history: {e}")
+
+
 @router.post("/stream")
 async def chat_stream(req: ChatRequest):
     """SSE streaming endpoint for knowledge-based Q&A."""
 
-    def event_stream():
+    async def event_stream():
         question = req.question
         references: List[Dict[str, Any]] = []
         images: List[Dict[str, Any]] = []
@@ -307,21 +333,35 @@ async def chat_stream(req: ChatRequest):
             return
 
         # Step 3: Sanitize answer — strip hallucinated IDs + background images
-        def _strip_bad_images(text: str) -> str:
+        async def _strip_bad_images(text: str) -> str:
             _img_storage = ImageStorage()
+            # find all placeholders
+            matches = list(re.finditer(r"\[IMAGE:\s*([^\]]+)\]", text))
+            if not matches:
+                return text
+                
+            # fetch paths async
+            valid_ids = {}
+            for m in matches:
+                img_id = m.group(1).strip()
+                if img_id not in valid_ids:
+                    img_path = await _img_storage.aget_image_path(img_id)
+                    if not img_path:
+                        logger.info(f"Stripped hallucinated image ref: [IMAGE: {img_id}]")
+                        valid_ids[img_id] = False
+                    elif _is_background_image(img_path):
+                        logger.info(f"Stripped background image ref: [IMAGE: {img_id}]")
+                        valid_ids[img_id] = False
+                    else:
+                        valid_ids[img_id] = True
+            
             def _replacer(m: re.Match) -> str:
                 img_id = m.group(1).strip()
-                img_path = _img_storage.get_image_path(img_id)
-                if not img_path:
-                    logger.info(f"Stripped hallucinated image ref: [IMAGE: {img_id}]")
-                    return ""
-                if _is_background_image(img_path):
-                    logger.info(f"Stripped background image ref: [IMAGE: {img_id}]")
-                    return ""
-                return m.group(0)
+                return m.group(0) if valid_ids.get(img_id) else ""
+                
             return re.sub(r"\[IMAGE:\s*([^\]]+)\]", _replacer, text)
 
-        full_answer = _strip_bad_images(full_answer)
+        full_answer = await _strip_bad_images(full_answer)
 
         # Step 4: Gallery extraction (AFTER LLM, so it doesn't delay first token)
         try:
@@ -334,7 +374,7 @@ async def chat_stream(req: ChatRequest):
             total_results = len(results)
             for rank, r in enumerate(results):
                 for ref in assembler.extract_image_refs(r):
-                    img_path = assembler.resolve_image_path(ref, req.collection)
+                    img_path = await assembler.aresolve_image_path(ref, req.collection)
                     if not img_path:
                         continue
                     try:
@@ -383,7 +423,7 @@ async def chat_stream(req: ChatRequest):
             logger.warning(f"Failed to cache answer: {e}")
 
         # Save to history
-        _save_history(question, full_answer, references)
+        await _asave_history(question, full_answer, references)
         logger.info(f"[perf] total: {time.perf_counter()-t0:.2f}s")
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
@@ -393,12 +433,13 @@ async def chat_stream(req: ChatRequest):
 async def get_history(limit: int = 50):
     """Return recent QA history."""
     try:
-        _init_history_db()
-        with get_connection(_HISTORY_DB) as conn:
-            rows = conn.execute(
+        await _ainit_history_db()
+        async with get_async_connection(_HISTORY_DB) as conn:
+            async with conn.execute(
                 "SELECT id, question, answer, references_json, created_at FROM qa_history ORDER BY id DESC LIMIT ?",
                 (limit,),
-            ).fetchall()
+            ) as cursor:
+                rows = await cursor.fetchall()
         return {
             "ok": True,
             "data": [
@@ -418,10 +459,10 @@ async def get_history(limit: int = 50):
 async def clear_history():
     """Clear all QA history."""
     try:
-        _init_history_db()
-        with get_connection(_HISTORY_DB) as conn:
-            conn.execute("DELETE FROM qa_history")
-            conn.commit()
+        await _ainit_history_db()
+        async with get_async_connection(_HISTORY_DB) as conn:
+            await conn.execute("DELETE FROM qa_history")
+            await conn.commit()
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "message": str(e)}

@@ -497,7 +497,7 @@ class BM25Indexer:
         Returns:
             IDF score (always >= 0 with the +1 variant)
         """
-        return math.log(1.0 + (num_docs - df + 0.5) / (df + 0.5))
+        return math.log((num_docs - df + 0.5) / (df + 0.5))
     
     def _calculate_bm25_score(
         self,

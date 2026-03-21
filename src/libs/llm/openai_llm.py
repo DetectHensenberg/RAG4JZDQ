@@ -298,7 +298,7 @@ class OpenAILLM(BaseLLM):
         }
         
         # Retry logic for network issues
-        max_retries = 2
+        max_retries = 1
         last_error = None
         
         for attempt in range(max_retries + 1):
@@ -319,7 +319,7 @@ class OpenAILLM(BaseLLM):
                     time.sleep(2)  # Wait before retry
                     continue
                 raise OpenAILLMError(
-                    f"[LLM:{self.model}] Request timed out after 120 seconds (retried {max_retries} times)"
+                    f"[LLM:{self.model}] Request timed out (retried {max_retries} times)"
                 ) from e
             except httpx.RequestError as e:
                 last_error = e

@@ -257,29 +257,22 @@ class QueryKnowledgeHubTool:
         trace.metadata["collection"] = effective_collection
         trace.metadata["source"] = "mcp"
 
+        logger.info(f"Executing query_knowledge_hub for query: {query[:50]}")
         try:
             # Initialize components for collection
-            # Run blocking I/O (embedding API, ChromaDB, BM25) in a thread
-            # to avoid blocking the async event loop / MCP stdio transport
-            import time as _time
-            _init_t0 = _time.monotonic()
+            logger.info(f"Initializing for collection: {effective_collection}")
             await asyncio.to_thread(self._ensure_initialized, effective_collection)
-            _init_elapsed = (_time.monotonic() - _init_t0) * 1000.0
-            trace.record_stage("initialization", {
-                "collection": effective_collection,
-                "cold_start": _init_elapsed > 500,  # >500ms ≈ cold
-            }, elapsed_ms=_init_elapsed)
             
-            # Perform hybrid search (blocking: embedding API + DB queries)
-            results = await asyncio.to_thread(
-                self._perform_search, query, effective_top_k, trace,
-            )
+            # Perform hybrid search
+            logger.info("Performing hybrid search...")
+            results = await asyncio.to_thread(self._perform_search, query, effective_top_k, trace)
+            logger.info(f"Search done, found {len(results) if results else 0} results")
             
-            # Apply reranking if enabled (may call LLM API)
+            # Apply reranking if enabled
             if self.config.enable_rerank and results:
-                results = await asyncio.to_thread(
-                    self._apply_rerank, query, results, effective_top_k, trace,
-                )
+                logger.info("Applying reranking...")
+                results = await asyncio.to_thread(self._apply_rerank, query, results, effective_top_k, trace)
+                logger.info("Reranking done")
             
             # Build response
             response = self._response_builder.build(

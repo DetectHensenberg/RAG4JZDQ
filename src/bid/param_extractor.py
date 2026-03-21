@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from src.core.settings import REPO_ROOT
 
@@ -162,15 +162,61 @@ def extract_params_from_text(
     return []
 
 
+def _batch_chunks(
+    chunks: List[ChunkMeta], max_chars: int = 6000
+) -> List[tuple[str, int, str]]:
+    """Merge small chunks into batches to reduce LLM calls.
+
+    Returns list of (combined_text, first_page, sections_hint).
+    """
+    batches: List[tuple[str, int, str]] = []
+    buf: List[str] = []
+    buf_len = 0
+    first_page = 0
+    sections: List[str] = []
+
+    for c in chunks:
+        t = c.text.strip()
+        if not t:
+            continue
+        if buf_len + len(t) > max_chars and buf:
+            batches.append(("\n\n".join(buf), first_page, "; ".join(dict.fromkeys(sections))))
+            buf, buf_len, sections = [], 0, []
+        if not buf:
+            first_page = c.page
+        buf.append(t)
+        buf_len += len(t)
+        if c.section:
+            sections.append(c.section)
+
+    if buf:
+        batches.append(("\n\n".join(buf), first_page, "; ".join(dict.fromkeys(sections))))
+    return batches
+
+
+MAX_EXTRACTION_CHUNKS = 8
+
+
 def extract_params_from_chunks(
     llm: Any,
     chunks: List[ChunkMeta],
+    max_chunks: int = MAX_EXTRACTION_CHUNKS,
+    on_progress: Optional[Callable[[int, int], None]] = None,
 ) -> List[Dict[str, Any]]:
     """Extract and merge parameters from multiple document chunks.
+
+    Chunks are batched together (up to ~6000 chars) to minimize LLM calls.
+    Batches are executed concurrently via ThreadPoolExecutor for speed.
 
     Args:
         llm: A BaseLLM instance.
         chunks: List of ChunkMeta with text, page, and section info.
+            Sorted by relevance (most relevant first from search).
+        max_chunks: Maximum number of chunks to send to LLM.
+            Only the top-ranked chunks are used; the rest are dropped.
+            Default: 8. Increase for more thorough extraction at cost of speed.
+        on_progress: Optional callback ``(completed, total)`` called after
+            each batch finishes.
 
     Returns:
         Merged list of product parameter dicts.
@@ -182,16 +228,58 @@ def extract_params_from_chunks(
 
     from merge_params import merge_product_params
 
-    all_extractions: List[Dict[str, Any]] = []
-    for i, chunk in enumerate(chunks):
-        if not chunk.text.strip():
-            continue
-        products = extract_params_from_text(
-            llm, chunk.text, page=chunk.page, section=chunk.section,
+    # Plan A: limit chunks sent to LLM (search recall is unaffected)
+    if len(chunks) > max_chunks:
+        logger.info(
+            f"Limiting extraction input: {len(chunks)} chunks → top {max_chunks}"
         )
-        if products:
-            all_extractions.append({"products": products})
-        logger.debug(f"Chunk {i + 1}/{len(chunks)}: extracted {len(products)} products")
+        chunks = chunks[:max_chunks]
+
+    batches = _batch_chunks(chunks)
+    logger.info(f"Batched {len(chunks)} chunks → {len(batches)} LLM calls")
+
+    # Plan B: concurrent LLM calls
+    if len(batches) > 1:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def _extract_batch(
+            idx: int, text: str, page: int, section: str,
+        ) -> tuple[int, List[Dict[str, Any]]]:
+            products = extract_params_from_text(llm, text, page=page, section=section)
+            return idx, products
+
+        all_extractions: List[Dict[str, Any]] = []
+        completed_count = 0
+        with ThreadPoolExecutor(max_workers=min(len(batches), 4)) as pool:
+            futures = {
+                pool.submit(_extract_batch, i, text, page, sec): i
+                for i, (text, page, sec) in enumerate(batches)
+            }
+            for future in as_completed(futures):
+                idx, products = future.result()
+                completed_count += 1
+                if products:
+                    all_extractions.append({"products": products})
+                if on_progress:
+                    on_progress(completed_count, len(batches))
+                logger.debug(
+                    f"Batch {idx + 1}/{len(batches)}: "
+                    f"extracted {len(products)} products"
+                )
+    else:
+        all_extractions = []
+        for i, (text, page, section) in enumerate(batches):
+            products = extract_params_from_text(
+                llm, text, page=page, section=section,
+            )
+            if products:
+                all_extractions.append({"products": products})
+            if on_progress:
+                on_progress(i + 1, len(batches))
+            logger.debug(
+                f"Batch {i + 1}/{len(batches)}: "
+                f"extracted {len(products)} products"
+            )
 
     if not all_extractions:
         return []

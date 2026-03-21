@@ -279,6 +279,7 @@ class IngestionPipeline:
         trace: Optional[TraceContext] = None,
         on_progress: Optional[Callable[[str, int, int], None]] = None,
         original_filename: Optional[str] = None,
+        extra_metadata: Optional[Dict[str, str]] = None,
     ) -> PipelineResult:
         """Execute the full ingestion pipeline on a file.
         
@@ -289,6 +290,8 @@ class IngestionPipeline:
                 invoked when each pipeline stage completes.  *current* is
                 the 1-based index of the completed stage; *total* is the
                 number of stages (currently 6).
+            extra_metadata: Optional dict of extra metadata to inject into
+                every chunk (e.g. product_vendor, product_model).
         
         Returns:
             PipelineResult with success status and statistics
@@ -321,7 +324,7 @@ class IngestionPipeline:
                 logger.info(f"  ⏭️  File already processed, skipping (use force=True to reprocess)")
                 return PipelineResult(
                     success=True,
-                    file_path=str(file_path),
+                    file_path=display_name,
                     doc_id=file_hash,
                     stages={"integrity": {"skipped": True, "reason": "already_processed"}}
                 )
@@ -396,6 +399,12 @@ class IngestionPipeline:
                 logger.info(f"  First chunk ID: {chunks[0].id}")
                 logger.info(f"  First chunk preview: {chunks[0].text[:100]}...")
             
+            # Inject extra metadata into every chunk (e.g. product_vendor, product_model)
+            if extra_metadata:
+                for c in chunks:
+                    c.metadata.update(extra_metadata)
+                logger.info(f"  Extra metadata injected: {list(extra_metadata.keys())}")
+
             stages["chunking"] = {
                 "chunk_count": len(chunks),
                 "avg_chunk_size": sum(len(c.text) for c in chunks) // len(chunks) if chunks else 0
@@ -607,7 +616,7 @@ class IngestionPipeline:
             # ─────────────────────────────────────────────────────────────
             # Mark Success
             # ─────────────────────────────────────────────────────────────
-            self.integrity_checker.mark_success(file_hash, str(file_path), self.collection)
+            self.integrity_checker.mark_success(file_hash, display_name, self.collection)
             
             # Force ChromaDB to persist HNSW index to disk after each file
             # This prevents index corruption during long batch runs
@@ -636,7 +645,7 @@ class IngestionPipeline:
             
             return PipelineResult(
                 success=True,
-                file_path=str(file_path),
+                file_path=display_name,
                 doc_id=file_hash,
                 chunk_count=len(chunks),
                 image_count=len(images),
@@ -646,11 +655,11 @@ class IngestionPipeline:
             
         except Exception as e:
             logger.error(f"❌ Pipeline failed: {e}", exc_info=True)
-            self.integrity_checker.mark_failed(file_hash, str(file_path), str(e))
+            self.integrity_checker.mark_failed(file_hash, display_name, str(e))
             
             return PipelineResult(
                 success=False,
-                file_path=str(file_path),
+                file_path=display_name,
                 doc_id=file_hash if 'file_hash' in locals() else None,
                 error=str(e),
                 stages=stages

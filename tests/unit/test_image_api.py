@@ -5,7 +5,7 @@ from __future__ import annotations
 import base64
 import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -34,6 +34,7 @@ class TestImageEndpoints:
             
             mock_storage = MagicMock()
             mock_storage.get_image_path.return_value = str(img_path)
+            mock_storage.aget_image_path = AsyncMock(return_value=str(img_path))
             
             yield mock_storage, str(img_path)
 
@@ -74,6 +75,7 @@ class TestImageEndpoints:
         """GET /api/data/images/{image_id} should return 404 for missing image."""
         mock_storage = MagicMock()
         mock_storage.get_image_path.return_value = None
+        mock_storage.aget_image_path = AsyncMock(return_value=None)
         
         with patch("src.ingestion.storage.image_storage.ImageStorage", return_value=mock_storage):
             response = client.get(
@@ -90,6 +92,7 @@ class TestImageEndpoints:
         """GET /api/data/images/{image_id}/raw should return 404 for missing image."""
         mock_storage = MagicMock()
         mock_storage.get_image_path.return_value = None
+        mock_storage.aget_image_path = AsyncMock(return_value=None)
         
         with patch("src.ingestion.storage.image_storage.ImageStorage", return_value=mock_storage):
             response = client.get(
@@ -114,6 +117,7 @@ class TestImageEndpoints:
             
             mock_storage = MagicMock()
             mock_storage.get_image_path.return_value = str(jpg_path)
+            mock_storage.aget_image_path = AsyncMock(return_value=str(jpg_path))
             
             with patch("src.ingestion.storage.image_storage.ImageStorage", return_value=mock_storage):
                 response = client.get(
@@ -140,5 +144,5 @@ class TestImageRelevanceThreshold:
         """Threshold should be a reasonable value."""
         from api.routers.chat import IMAGE_RELEVANCE_THRESHOLD
         
-        # 0.25 is the expected value
-        assert IMAGE_RELEVANCE_THRESHOLD == pytest.approx(0.25, rel=0.01)
+        # 0.10 is the current value
+        assert IMAGE_RELEVANCE_THRESHOLD == pytest.approx(0.10, rel=0.01)

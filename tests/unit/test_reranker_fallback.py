@@ -21,6 +21,15 @@ from src.core.query_engine.reranker import (
 from src.core.types import RetrievalResult
 from src.libs.reranker.base_reranker import BaseReranker, NoneReranker
 
+# Mock cache to avoid side effects between tests
+@pytest.fixture(autouse=True)
+def mock_rerank_cache():
+    with patch("src.core.query_engine.reranker.get_rerank_cache") as mock:
+        mock_instance = MagicMock()
+        mock_instance.get.return_value = None
+        mock.return_value = mock_instance
+        yield mock
+
 
 # =============================================================================
 # Fixtures
@@ -180,6 +189,9 @@ class TestCoreRerankerNormalFlow:
         assert fake_reranker.call_count == 1
         assert fake_reranker.last_query == "test query"
         assert len(fake_reranker.last_candidates) == 3
+        # Check that [doc_id] prefix is added
+        assert fake_reranker.last_candidates[0]["text"].startswith("[doc1]")
+        assert "First chunk" in fake_reranker.last_candidates[0]["text"]
     
     def test_rerank_returns_reranked_results(self, mock_settings, sample_results):
         """Test that reranked results are returned correctly."""
@@ -203,7 +215,7 @@ class TestCoreRerankerNormalFlow:
         # FakeReranker reverses order, so first result should be chunk_003
         first = result.results[0]
         assert first.chunk_id == "chunk_003"
-        assert first.text == "Third chunk about neural networks."
+        assert "Third chunk about neural networks." in first.text
         assert first.metadata["source_path"] == "doc2.pdf"
     
     def test_rerank_adds_score_metadata(self, mock_settings, sample_results):
@@ -402,7 +414,8 @@ class TestTypeConversion:
         
         assert len(candidates) == 3
         assert candidates[0]["id"] == "chunk_001"
-        assert candidates[0]["text"] == "First chunk about machine learning."
+        assert candidates[0]["text"].startswith("[doc1] ")
+        assert "First chunk" in candidates[0]["text"]
         assert candidates[0]["score"] == 0.9
         assert "source_path" in candidates[0]["metadata"]
     

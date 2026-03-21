@@ -27,13 +27,14 @@ def _load_comparison_prompt() -> str:
     if _PROMPT_PATH.exists():
         try:
             content = _PROMPT_PATH.read_text(encoding="utf-8")
-            lines = content.split("```")
-            if len(lines) >= 3:
-                prompt_block = lines[1]
-                prompt_lines = prompt_block.strip().split("\n")
-                if prompt_lines and not prompt_lines[0].strip().startswith("你"):
-                    prompt_lines = prompt_lines[1:]
-                return "\n".join(prompt_lines)
+            blocks = content.split("```")
+            if len(blocks) >= 3:
+                prompt_block = blocks[1].strip()
+                # Skip optional language hint line (e.g. "markdown")
+                lines = prompt_block.split("\n")
+                if lines and lines[0].strip().isalpha() and len(lines[0].strip()) < 15:
+                    lines = lines[1:]
+                return "\n".join(lines).strip()
         except Exception as e:
             logger.warning(f"Failed to load comparison prompt: {e}")
     return _FALLBACK_PROMPT
@@ -49,32 +50,49 @@ def _load_risk_rules() -> str:
     return ""
 
 
-_FALLBACK_PROMPT = """你是一位严谨的产品技术审查专家。请逐项比对以下两份产品技术参数。
+_FALLBACK_PROMPT = """逐项比对以下两份产品技术参数。参数命名可能不同，按语义匹配。
 
-两份资料对同一参数的命名可能不同（如"分辨率"vs"像素数"），你需要根据语义判断是否为同一参数。
-
-【官方参数（来自产品知识库）】
+【官方参数】
 {official_params}
 
-【送审参数（来自厂家提供的技术资料）】
+【送审参数】
 {vendor_params}
 
-比对规则：
-1. ✅ 一致：数值相同或合理误差
-2. ⚠️ 偏差：数值不一致（标注风险等级：高/中/低）
-3. ❌ 缺失：官方有但送审无
-4. ➕ 新增：送审有但官方无
+比对规则：✅一致 ⚠️偏差 ❌缺失 ➕新增
+风险：高=核心参数造假 中=有差异需关注 低=表述差异
 
-输出格式（Markdown）：
+输出Markdown：
 
 ## 比对结果
 
-| 序号 | 参数项 | 官方值 | 送审值 | 状态 | 风险等级 | 页码 | 章节 | 说明 |
-|------|--------|--------|--------|------|----------|------|------|------|
+| 参数项 | 官方值 | 送审值 | 状态 | 风险 | 说明 |
+|--------|--------|--------|------|------|------|
 
-## 审查统计
-## 风险提示
-## 审查结论"""
+## 统计
+一致X项/偏差X项(高X中X低X)/缺失X项/新增X项
+
+## 结论
+一句话总结是否存在造假嫌疑"""
+
+
+def _params_to_compact(params: List[Dict[str, str]]) -> str:
+    """Convert param list to compact format: one 'name: value' per line.
+
+    This reduces token count by ~50% compared to full JSON with
+    name/value/unit/page/section fields.
+    """
+    lines: List[str] = []
+    for p in params:
+        name = p.get("name", "")
+        value = p.get("value", "")
+        unit = p.get("unit", "")
+        if not name:
+            continue
+        entry = f"- {name}: {value}"
+        if unit and unit not in value:
+            entry += f" ({unit})"
+        lines.append(entry)
+    return "\n".join(lines) if lines else "(无参数)"
 
 
 def compare_params_stream(
@@ -101,8 +119,9 @@ def compare_params_stream(
     template = _load_comparison_prompt()
     risk_rules = _load_risk_rules()
 
-    official_str = json.dumps(official_params, ensure_ascii=False, indent=2)
-    vendor_str = json.dumps(vendor_params, ensure_ascii=False, indent=2)
+    # Compact param format: "name: value" per line (saves ~50% tokens vs JSON)
+    official_str = _params_to_compact(official_params)
+    vendor_str = _params_to_compact(vendor_params)
 
     prompt = template.replace("{official_params}", official_str).replace(
         "{vendor_params}", vendor_str
@@ -111,18 +130,16 @@ def compare_params_stream(
     context_parts: List[str] = []
     if official_info:
         context_parts.append(
-            f"官方产品：{official_info.get('vendor', '')} {official_info.get('model', '')} "
-            f"({official_info.get('product_name', '')})"
+            f"官方产品：{official_info.get('vendor', '')} {official_info.get('model', '')}"
         )
     if vendor_info:
         context_parts.append(
-            f"送审产品：{vendor_info.get('vendor', '')} {vendor_info.get('model', '')} "
-            f"({vendor_info.get('product_name', '')})"
+            f"送审产品：{vendor_info.get('vendor', '')} {vendor_info.get('model', '')}"
         )
 
-    system_content = "你是一位严谨的产品技术审查专家。输出比对表格时必须包含'页码'和'章节'两列。"
+    system_content = "你是产品技术审查专家。按规则逐项比对参数，输出Markdown表格。"
     if risk_rules:
-        system_content += f"\n\n以下是风险等级判定规则：\n{risk_rules}"
+        system_content += f"\n\n风险判定规则：\n{risk_rules}"
 
     user_content = prompt
     if context_parts:
@@ -134,7 +151,7 @@ def compare_params_stream(
     ]
 
     try:
-        for chunk in llm.chat_stream(messages):
+        for chunk in llm.chat_stream(messages, max_tokens=2048):
             yield chunk
     except Exception as e:
         logger.error(f"LLM comparison stream failed: {e}")

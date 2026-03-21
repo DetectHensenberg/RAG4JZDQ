@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import logging
 import sqlite3
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
-from typing import Generator
+from typing import AsyncGenerator, Generator
 
 logger = logging.getLogger(__name__)
 
@@ -43,3 +43,28 @@ def get_connection(
         yield conn
     finally:
         conn.close()
+
+
+@asynccontextmanager
+async def get_async_connection(
+    db_path: str | Path,
+    *,
+    row_factory: bool = False,
+) -> AsyncGenerator:
+    """Async context manager that yields an aiosqlite connection and ensures cleanup.
+
+    Args:
+        db_path: Path to the SQLite database file.
+        row_factory: If True, set dict-like row access.
+
+    Yields:
+        An open :class:`aiosqlite.Connection`.
+    """
+    import aiosqlite
+
+    async with aiosqlite.connect(str(db_path)) as conn:
+        # aiosqlite automatically manages the context
+        await conn.execute("PRAGMA journal_mode=WAL;")
+        if row_factory:
+            conn.row_factory = aiosqlite.Row
+        yield conn

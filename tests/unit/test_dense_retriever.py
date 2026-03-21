@@ -10,11 +10,18 @@ from typing import Any, Dict, List
 
 from src.core.query_engine.dense_retriever import DenseRetriever, create_dense_retriever
 from src.core.types import RetrievalResult
+from src.libs.embedding.embedding_cache import get_query_cache
 
 
 # =============================================================================
 # Test Fixtures
 # =============================================================================
+
+@pytest.fixture(autouse=True)
+def clear_cache():
+    """Clear embedding cache before each test."""
+    get_query_cache().clear()
+    yield
 
 class FakeEmbedding:
     """Fake embedding client for testing."""

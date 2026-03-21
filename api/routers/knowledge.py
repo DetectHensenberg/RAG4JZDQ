@@ -128,7 +128,24 @@ def _run_ingestion_worker(task_id: str, task: Dict[str, Any]) -> None:
             })
 
             try:
-                result = pipeline.run(file_path=fpath)
+                from src.ingestion.vendor_inference import infer_from_filename
+
+                extra_meta = task.get("extra_metadata")
+                file_meta = dict(extra_meta) if extra_meta else {}
+                file_meta["source_filename"] = fname
+                file_meta["source_directory"] = str(Path(fpath).parent.name)
+                # Auto-infer vendor/model from filename when not provided
+                if not file_meta.get("product_vendor") or not file_meta.get("product_model"):
+                    inf_vendor, inf_model = infer_from_filename(fname)
+                    if inf_vendor and not file_meta.get("product_vendor"):
+                        file_meta["product_vendor"] = inf_vendor
+                    if inf_model and not file_meta.get("product_model"):
+                        file_meta["product_model"] = inf_model
+                result = pipeline.run(
+                    file_path=fpath,
+                    original_filename=fname,
+                    extra_metadata=file_meta if file_meta else None,
+                )
                 if result.stages.get("integrity", {}).get("skipped"):
                     results["skipped"] += 1
                     event_queue.put({"type": "file_done", "file": fname, "status": "skipped"})
@@ -177,11 +194,23 @@ async def start_ingest(req: IngestRequest):
         return {"ok": False, "message": "未找到匹配文件"}
 
     task_id = str(uuid.uuid4())[:8]
+    # Build extra metadata for product collections
+    extra_metadata: Dict[str, str] = {}
+    if req.product_vendor:
+        extra_metadata["product_vendor"] = req.product_vendor
+    if req.product_model:
+        extra_metadata["product_model"] = req.product_model
+    if req.product_category:
+        extra_metadata["product_category"] = req.product_category
+    if req.product_device:
+        extra_metadata["product_device"] = req.product_device
+
     task = {
         "files": [str(f) for f in files],
         "collection": req.collection,
         "force": req.force,
         "skip_llm_transform": req.skip_llm_transform,
+        "extra_metadata": extra_metadata if extra_metadata else None,
         "stop_requested": False,
         "status": "pending",
         "event_queue": queue.Queue(),

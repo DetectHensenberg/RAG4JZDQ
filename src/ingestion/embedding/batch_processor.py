@@ -177,8 +177,13 @@ class BatchProcessor:
                         sparse_error = e
                         logger.error(f"Batch {batch_idx} sparse encoding failed: {e}")
                 
-                if dense_error and sparse_error:
-                    raise RuntimeError(f"Both encoders failed: dense={dense_error}, sparse={sparse_error}")
+                if dense_error or sparse_error:
+                    error_msg = ""
+                    if dense_error:
+                        error_msg += f"dense={dense_error} "
+                    if sparse_error:
+                        error_msg += f"sparse={sparse_error}"
+                    raise RuntimeError(f"Encoder failed: {error_msg}")
                 
                 if batch_dense:
                     dense_vectors.extend(batch_dense)

@@ -250,6 +250,45 @@ class MultimodalAssembler:
         
         return None
     
+    async def aresolve_image_path(
+        self,
+        ref: ImageReference,
+        collection: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve the filesystem path for an image reference asynchronously.
+        
+        Args:
+            ref: ImageReference to resolve.
+            collection: Optional collection name for path construction.
+            
+        Returns:
+            Absolute file path if found, None otherwise.
+        """
+        if ref.file_path:
+            path = Path(ref.file_path)
+            if path.exists():
+                return str(path.resolve())
+        
+        if self._image_storage is not None:
+            try:
+                if hasattr(self._image_storage, "aget_image_path"):
+                    path = await self._image_storage.aget_image_path(ref.image_id)
+                else:
+                    path = self._image_storage.get_image_path(ref.image_id)
+                if path and Path(path).exists():
+                    return path
+            except Exception as e:
+                logger.warning(f"ImageStorage async lookup failed for {ref.image_id}: {e}")
+        
+        if collection:
+            from src.core.settings import resolve_path
+            for ext in [".png", ".jpg", ".jpeg", ".webp"]:
+                candidate = resolve_path(f"data/images/{collection}/{ref.image_id}{ext}")
+                if candidate.exists():
+                    return str(candidate.resolve())
+        
+        return None
+    
     def load_image(
         self,
         file_path: str,

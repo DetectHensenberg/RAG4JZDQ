@@ -17,12 +17,39 @@
       <div class="upload-body">
         <div class="collection-field">
           <label class="field-label">集合</label>
-          <el-input v-model="collection" style="width: 140px" />
+          <el-select v-model="collection" style="width: 200px" @change="loadDocuments(true)">
+            <el-option label="default（默认知识库）" value="default" />
+            <el-option label="products（产品库）" value="products" />
+          </el-select>
+        </div>
+
+        <!-- Product metadata fields (only for products collection) -->
+        <div v-if="collection === 'products'" class="product-meta-fields">
+          <div class="meta-row">
+            <div class="meta-field">
+              <label class="field-label">厂家</label>
+              <el-input v-model="productVendor" placeholder="如：海康威视" size="small" />
+            </div>
+            <div class="meta-field">
+              <label class="field-label">型号</label>
+              <el-input v-model="productModel" placeholder="如：DS-2CD3T47WD" size="small" />
+            </div>
+          </div>
+          <div class="meta-row">
+            <div class="meta-field">
+              <label class="field-label">设备类型</label>
+              <el-input v-model="productDevice" placeholder="如：网络摄像机" size="small" />
+            </div>
+            <div class="meta-field">
+              <label class="field-label">分类</label>
+              <el-input v-model="productCategory" placeholder="如：安防监控" size="small" />
+            </div>
+          </div>
         </div>
         
         <el-upload
           :action="`/api/ingest/upload`"
-          :data="{ collection }"
+          :data="uploadData"
           :on-success="onUploadSuccess"
           :on-error="onUploadError"
           :before-upload="() => { uploading = true; return true }"
@@ -58,9 +85,15 @@
           <span>已摄取文档</span>
           <span class="doc-count">{{ documents.length }} 个</span>
         </div>
-        <button class="refresh-btn" @click="refreshDocuments" :disabled="loading">
-          <el-icon :size="16"><Refresh v-if="!loading" /><Loading v-else class="spin" /></el-icon>
-        </button>
+        <div class="header-actions">
+          <button class="danger-btn" @click="showClearConfirm = true" :disabled="loading || !documents.length">
+            <el-icon :size="14"><Delete /></el-icon>
+            <span>清空集合</span>
+          </button>
+          <button class="refresh-btn" @click="refreshDocuments" :disabled="loading">
+            <el-icon :size="16"><Refresh v-if="!loading" /><Loading v-else class="spin" /></el-icon>
+          </button>
+        </div>
       </div>
 
       <!-- Loading State -->
@@ -118,11 +151,33 @@
         </div>
       </template>
     </el-dialog>
+
+    <!-- Clear Collection Confirm Dialog -->
+    <el-dialog
+      v-model="showClearConfirm"
+      title="清空集合"
+      width="400px"
+      :close-on-click-modal="false"
+    >
+      <p class="confirm-text">
+        确定要清空集合 <strong>{{ collection }}</strong> 的所有数据吗？<br/>
+        这将删除该集合下的所有向量、BM25索引和摄取记录。<br/>
+        <strong style="color:var(--c-danger)">此操作不可撤销！</strong>
+      </p>
+      <template #footer>
+        <div class="dialog-actions">
+          <button class="cancel-btn" @click="showClearConfirm = false">取消</button>
+          <button class="confirm-btn danger" @click="doClearCollection" :disabled="clearing">
+            {{ clearing ? '清空中...' : '确认清空' }}
+          </button>
+        </div>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Upload, Document, Refresh, Loading, CircleCheck, CircleClose, Delete } from '@element-plus/icons-vue'
 import { useCacheStore } from '@/stores/cache'
@@ -131,6 +186,10 @@ import api from '@/composables/useApi'
 const cache = useCacheStore()
 
 const collection = ref('default')
+const productVendor = ref('')
+const productModel = ref('')
+const productDevice = ref('')
+const productCategory = ref('')
 const uploading = ref(false)
 const uploadResult = ref<{ ok: boolean; message: string } | null>(null)
 const documents = ref<any[]>([])
@@ -138,6 +197,19 @@ const loading = ref(false)
 const showDeleteConfirm = ref(false)
 const deleting = ref(false)
 const docToDelete = ref<any>(null)
+const showClearConfirm = ref(false)
+const clearing = ref(false)
+
+const uploadData = computed(() => {
+  const d: Record<string, string> = { collection: collection.value }
+  if (collection.value === 'products') {
+    if (productVendor.value) d.product_vendor = productVendor.value
+    if (productModel.value) d.product_model = productModel.value
+    if (productDevice.value) d.product_device = productDevice.value
+    if (productCategory.value) d.product_category = productCategory.value
+  }
+  return d
+})
 
 function onUploadSuccess(response: any) {
   uploading.value = false
@@ -203,6 +275,28 @@ async function doDelete() {
   }
 }
 
+async function doClearCollection() {
+  clearing.value = true
+  try {
+    const { data } = await api.post('/ingest/collection/clear', {
+      collection: collection.value,
+    })
+    if (data.ok) {
+      const info = data.data || {}
+      ElMessage.success(`已清空集合 "${collection.value}"（${info.chunks || 0} 个向量, ${info.records || 0} 条记录）`)
+      showClearConfirm.value = false
+      cache.clearDocumentsCache(collection.value)
+      loadDocuments(true)
+    } else {
+      ElMessage.error(data.message)
+    }
+  } catch {
+    ElMessage.error('清空集合失败')
+  } finally {
+    clearing.value = false
+  }
+}
+
 onMounted(() => {
   // 首次加载时使用缓存
   loadDocuments()
@@ -259,6 +353,7 @@ onMounted(() => {
 .section-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   gap: var(--sp-2);
   padding: var(--sp-4) var(--sp-5);
   background: var(--c-surface);
@@ -266,6 +361,39 @@ onMounted(() => {
   font-size: var(--fs-sm);
   font-weight: 500;
   color: var(--c-text-primary);
+}
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
+}
+.danger-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-1);
+  background: none;
+  border: 1px solid rgba(239,68,68,0.3);
+  border-radius: var(--radius-sm, 6px);
+  color: #ef4444;
+  font-size: var(--fs-xs);
+  padding: 4px 10px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.danger-btn:hover:not(:disabled) {
+  background: rgba(239,68,68,0.1);
+  border-color: #ef4444;
+}
+.danger-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.confirm-btn.danger {
+  background: #ef4444;
+  border-color: #ef4444;
+}
+.confirm-btn.danger:hover:not(:disabled) {
+  background: #dc2626;
 }
 
 .upload-body {
@@ -277,6 +405,27 @@ onMounted(() => {
   align-items: center;
   gap: var(--sp-3);
   margin-bottom: var(--sp-4);
+}
+
+.product-meta-fields {
+  margin-bottom: var(--sp-4);
+  padding: var(--sp-4);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  background: rgba(255,255,255,0.02);
+}
+.meta-row {
+  display: flex;
+  gap: var(--sp-4);
+}
+.meta-row + .meta-row {
+  margin-top: var(--sp-3);
+}
+.meta-field {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--sp-2);
 }
 
 .field-label {

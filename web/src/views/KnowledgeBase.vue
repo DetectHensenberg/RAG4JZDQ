@@ -35,7 +35,10 @@
           </div>
           <div class="config-field config-field-small">
             <label class="field-label">集合</label>
-            <el-input v-model="collection" :disabled="ingesting" class="collection-input" />
+            <el-select v-model="collection" :disabled="ingesting" class="collection-input">
+              <el-option label="default（默认知识库）" value="default" />
+              <el-option label="products（产品库）" value="products" />
+            </el-select>
           </div>
           <button
             class="scan-btn"
@@ -46,6 +49,25 @@
             <el-icon :size="18"><Search /></el-icon>
             <span>{{ scanning ? '扫描中...' : '扫描' }}</span>
           </button>
+        </div>
+        <!-- Product metadata fields (only for products collection) -->
+        <div v-if="collection === 'products'" class="config-row product-meta-row">
+          <div class="config-field config-field-small">
+            <label class="field-label">厂家</label>
+            <el-input v-model="productVendor" :disabled="ingesting" placeholder="如：海康威视" size="small" />
+          </div>
+          <div class="config-field config-field-small">
+            <label class="field-label">型号</label>
+            <el-input v-model="productModel" :disabled="ingesting" placeholder="如：DS-2CD3T47WD" size="small" />
+          </div>
+          <div class="config-field config-field-small">
+            <label class="field-label">设备类型</label>
+            <el-input v-model="productDevice" :disabled="ingesting" placeholder="如：网络摄像机" size="small" />
+          </div>
+          <div class="config-field config-field-small">
+            <label class="field-label">分类</label>
+            <el-input v-model="productCategory" :disabled="ingesting" placeholder="如：安防监控" size="small" />
+          </div>
         </div>
         <div class="config-row config-row-options">
           <el-checkbox v-model="forceReingest" :disabled="ingesting" label="强制重入库 (覆盖已有文件)" />
@@ -175,6 +197,10 @@ import api from '@/composables/useApi'
 
 const folderPath = ref('')
 const collection = ref('default')
+const productVendor = ref('')
+const productModel = ref('')
+const productDevice = ref('')
+const productCategory = ref('')
 const forceReingest = ref(false)
 const skipLlm = ref(false)
 const files = ref<any[]>([])
@@ -239,12 +265,19 @@ async function startIngest() {
   resultCounts.value = { success: 0, failed: 0, skipped: 0 }
 
   try {
-    const { data } = await api.post('/knowledge/ingest', {
+    const payload: Record<string, any> = {
       folder_path: folderPath.value,
       collection: collection.value,
       force: forceReingest.value,
       skip_llm_transform: skipLlm.value,
-    })
+    }
+    if (collection.value === 'products') {
+      if (productVendor.value) payload.product_vendor = productVendor.value
+      if (productModel.value) payload.product_model = productModel.value
+      if (productDevice.value) payload.product_device = productDevice.value
+      if (productCategory.value) payload.product_category = productCategory.value
+    }
+    const { data } = await api.post('/knowledge/ingest', payload)
     if (!data.ok) { ElMessage.error(data.message); ingesting.value = false; return }
     taskId.value = data.data.task_id
 
@@ -353,6 +386,14 @@ async function stopIngest() {
   align-items: center;
   padding-top: var(--sp-3);
   gap: var(--sp-6);
+}
+
+.product-meta-row {
+  margin-top: var(--sp-3);
+  padding: var(--sp-3) var(--sp-4);
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius);
+  background: rgba(255,255,255,0.02);
 }
 
 .config-field {

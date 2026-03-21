@@ -53,13 +53,13 @@ async def get_stats():
     stats["chroma_size"] = _format_size(_dir_size(chroma_dir))
 
     try:
-        import sqlite3
+        import aiosqlite
         db_path = chroma_dir / "chroma.sqlite3"
         if db_path.exists():
-            conn = sqlite3.connect(str(db_path))
-            count = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
-            stats["total_chunks"] = count
-            conn.close()
+            async with aiosqlite.connect(str(db_path)) as conn:
+                async with conn.execute("SELECT COUNT(*) FROM embeddings") as cursor:
+                    row = await cursor.fetchone()
+                    stats["total_chunks"] = row[0] if row else 0
     except Exception:
         pass
 
@@ -75,16 +75,16 @@ async def get_stats():
 
     # Document count from ingestion history
     try:
-        import sqlite3
+        import aiosqlite
         hist_path = resolve_path("data/db/ingestion_history.db")
         if hist_path.exists():
-            conn = sqlite3.connect(str(hist_path))
-            try:
-                count = conn.execute("SELECT COUNT(*) FROM ingestion_history WHERE status='success'").fetchone()[0]
-                stats["total_documents"] = count
-            except Exception:
-                pass
-            conn.close()
+            async with aiosqlite.connect(str(hist_path)) as conn:
+                try:
+                    async with conn.execute("SELECT COUNT(*) FROM ingestion_history WHERE status='success'") as cursor:
+                        row = await cursor.fetchone()
+                        stats["total_documents"] = row[0] if row else 0
+                except Exception:
+                    pass
     except Exception:
         pass
 

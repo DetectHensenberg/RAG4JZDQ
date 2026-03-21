@@ -1,5 +1,13 @@
 <template>
   <div class="verifier-page">
+    <!-- Hidden file input (must be outside v-for for ref to work) -->
+    <input
+      ref="fileInputRef"
+      type="file"
+      accept=".pdf,.docx,.doc"
+      style="display:none"
+      @change="handleFileSelect"
+    />
     <!-- Messages Area -->
     <div ref="messagesRef" class="messages-area">
       <!-- Empty state -->
@@ -64,13 +72,6 @@
                 <p>拖拽文件到此处，或点击选择文件</p>
                 <span>支持 PDF、DOCX 格式</span>
               </div>
-              <input
-                ref="fileInputRef"
-                type="file"
-                accept=".pdf,.docx,.doc"
-                style="display:none"
-                @change="handleFileSelect"
-              />
             </template>
 
             <!-- Upload status -->
@@ -79,9 +80,10 @@
                 <p>{{ msg.content }}</p>
                 <el-progress
                   v-if="msg.status === 'uploading'"
-                  :percentage="100"
-                  status="warning"
-                  :indeterminate="true"
+                  :percentage="msg.percent || 0"
+                  :status="(msg.percent || 0) >= 90 ? 'success' : undefined"
+                  :stroke-width="8"
+                  :indeterminate="!msg.percent"
                   :duration="2"
                   style="margin-top:8px"
                 />
@@ -249,6 +251,7 @@ interface BidMessage {
   tableData?: any[]
   viewMode?: string
   status?: string
+  percent?: number
 }
 
 type WorkflowState = 'idle' | 'searching' | 'product_list' | 'selected' | 'uploading' | 'extracting' | 'comparing' | 'done'
@@ -269,7 +272,9 @@ const selectedProduct = ref<{ data: any; index: number } | null>(null)
 const officialParamId = ref<number | null>(null)
 const vendorParamIds = ref<number[]>([])
 
-const { stream, abort } = useSSE()
+const { stream, streamUpload, abort } = useSSE()
+const uploadPercent = ref(0)
+const uploadStageMsg = ref('')
 
 // ── Computed ────────────────────────────────────────────────────
 
@@ -426,44 +431,77 @@ async function uploadFile(file: File) {
   }
 
   workflowState.value = 'uploading'
-  addMsg({ role: 'system', type: 'upload-status', content: `正在上传并分析 "${file.name}"...`, status: 'uploading' })
+  uploadPercent.value = 0
+  uploadStageMsg.value = `正在上传并分析 "${file.name}"...`
+  addMsg({ role: 'system', type: 'upload-status', content: uploadStageMsg.value, status: 'uploading', percent: 0 })
   scrollToBottom()
 
-  try {
-    const formData = new FormData()
-    formData.append('file', file)
-    formData.append('doc_type', 'vendor')
-    formData.append('collection', collection.value)
-
-    const { data } = await api.post('/bid/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-      timeout: 120000,
-    })
-
-    messages.value.pop()
-
-    if (data.ok && data.data?.length) {
-      vendorParamIds.value = data.vendor_param_ids || []
-      workflowState.value = 'extracting'
-
-      addMsg({
-        role: 'assistant', type: 'extract-result',
-        content: data.message || '参数提取完成',
-        products: data.data,
-      })
-
-      await nextTick()
-      scrollToBottom()
-      await startComparison()
-    } else {
-      workflowState.value = 'selected'
-      addMsg({ role: 'assistant', type: 'text', content: data.message || '未能提取到参数，请检查文件内容' })
-    }
-  } catch (e: any) {
-    messages.value.pop()
-    workflowState.value = 'selected'
-    addMsg({ role: 'assistant', type: 'text', content: `上传失败: ${e.message}` })
+  const formData = new FormData()
+  formData.append('file', file)
+  formData.append('doc_type', 'vendor')
+  formData.append('collection', collection.value)
+  if (selectedProduct.value?.data) {
+    const p = selectedProduct.value.data
+    if (p.vendor) formData.append('product_vendor', p.vendor)
+    if (p.model) formData.append('product_model', p.model)
+    if (p.category) formData.append('product_category', p.category)
   }
+
+  // Find the upload-status message index for live updates
+  const statusIdx = messages.value.length - 1
+
+  await streamUpload(
+    '/api/bid/upload',
+    formData,
+    (event) => {
+      if (event.type === 'progress') {
+        // Update the existing upload-status message in-place
+        uploadPercent.value = event.percent || 0
+        uploadStageMsg.value = event.message || ''
+        if (statusIdx >= 0 && messages.value[statusIdx]?.type === 'upload-status') {
+          messages.value[statusIdx].content = event.message
+          messages.value[statusIdx].percent = event.percent || 0
+        }
+        scrollToBottom()
+      } else if (event.type === 'done') {
+        // Remove upload-status message
+        if (statusIdx >= 0 && messages.value[statusIdx]?.type === 'upload-status') {
+          messages.value.splice(statusIdx, 1)
+        }
+
+        if (event.ok && event.data?.length) {
+          vendorParamIds.value = event.vendor_param_ids || []
+          workflowState.value = 'extracting'
+          addMsg({
+            role: 'assistant', type: 'extract-result',
+            content: event.message || '参数提取完成',
+            products: event.data,
+          })
+          nextTick().then(() => {
+            scrollToBottom()
+            startComparison()
+          })
+        } else {
+          workflowState.value = 'selected'
+          addMsg({ role: 'assistant', type: 'text', content: event.message || '未能提取到参数，请检查文件内容' })
+        }
+      } else if (event.type === 'error') {
+        if (statusIdx >= 0 && messages.value[statusIdx]?.type === 'upload-status') {
+          messages.value.splice(statusIdx, 1)
+        }
+        workflowState.value = 'selected'
+        addMsg({ role: 'assistant', type: 'text', content: event.message || '上传处理失败' })
+      }
+    },
+    undefined,
+    (err) => {
+      if (statusIdx >= 0 && messages.value[statusIdx]?.type === 'upload-status') {
+        messages.value.splice(statusIdx, 1)
+      }
+      workflowState.value = 'selected'
+      addMsg({ role: 'assistant', type: 'text', content: `上传失败: ${err.message}` })
+    },
+  )
 }
 
 // ── Step 4: Compare ─────────────────────────────────────────────
@@ -475,6 +513,7 @@ async function startComparison() {
     return
   }
 
+  // Try to find existing official params
   try {
     const { data } = await api.get('/bid/params', { params: { doc_type: 'official', limit: 50 } })
     if (data.ok && data.data?.length) {
@@ -482,10 +521,36 @@ async function startComparison() {
     }
   } catch { /* ignore */ }
 
+  // If no official params, auto-extract from knowledge base
+  if (!officialParamId.value && selectedProduct.value?.data) {
+    const p = selectedProduct.value.data
+    const productName = `${p.vendor || ''} ${p.model || ''}`.trim()
+    addMsg({ role: 'system', type: 'upload-status', content: `正在从知识库提取 "${productName}" 的官方参数...`, status: 'uploading' })
+    scrollToBottom()
+
+    try {
+      const { data } = await api.post('/bid/extract-official', {
+        query: productName || p.source || '',
+        vendor: p.vendor || '',
+        model: p.model || '',
+        category: p.category || '',
+        collection: collection.value,
+      }, { timeout: 300000 })
+      messages.value.pop()
+
+      if (data.ok && data.official_param_ids?.length) {
+        officialParamId.value = data.official_param_ids[0]
+        addMsg({ role: 'assistant', type: 'text', content: `已从知识库自动提取官方参数（${data.message}）` })
+      }
+    } catch (e: any) {
+      messages.value.pop()
+    }
+  }
+
   if (!officialParamId.value) {
     addMsg({
       role: 'assistant', type: 'text',
-      content: '⚠️ 产品知识库中暂无该产品的官方参数记录，无法进行比对。请先上传官方产品资料建立基准数据。\n\n已提取的送审参数已保存，可在官方数据就绪后重新比对。',
+      content: '⚠️ 无法从知识库提取官方参数，请先通过知识库构建页面上传官方产品资料。\n\n已提取的送审参数已保存，可在官方数据就绪后重新比对。',
     })
     workflowState.value = 'done'
     return

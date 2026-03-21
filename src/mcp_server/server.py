@@ -60,23 +60,34 @@ def _preload_heavy_imports() -> None:
     """
     # chromadb is the heaviest culprit (onnxruntime, numpy, …)
     try:
+        sys.stderr.write("Preloading chromadb...\n")
         import chromadb  # noqa: F401
         import chromadb.config  # noqa: F401
+        sys.stderr.write("Preloading chromadb done.\n")
     except ImportError:
         pass  # optional at install time
 
     # Internal modules that tools lazy-import inside asyncio.to_thread
     try:
+        sys.stderr.write("Preloading internal modules...\n")
         import src.core.query_engine.query_processor  # noqa: F401
+        sys.stderr.write("Preloading query_processor done.\n")
         import src.core.query_engine.hybrid_search  # noqa: F401
+        sys.stderr.write("Preloading hybrid_search done.\n")
         import src.core.query_engine.dense_retriever  # noqa: F401
+        sys.stderr.write("Preloading dense_retriever done.\n")
         import src.core.query_engine.sparse_retriever  # noqa: F401
+        sys.stderr.write("Preloading sparse_retriever done.\n")
         import src.core.query_engine.reranker  # noqa: F401
+        sys.stderr.write("Preloading reranker done.\n")
         import src.ingestion.storage.bm25_indexer  # noqa: F401
+        sys.stderr.write("Preloading bm25_indexer done.\n")
         import src.libs.embedding.embedding_factory  # noqa: F401
+        sys.stderr.write("Preloading embedding_factory done.\n")
         import src.libs.vector_store.vector_store_factory  # noqa: F401
-    except ImportError:
-        pass
+        sys.stderr.write("Preloading internal modules done.\n")
+    except Exception as e:
+        sys.stderr.write(f"Preloading failed: {e}\n")
 
 
 async def run_stdio_server_async() -> int:
@@ -95,13 +106,18 @@ async def run_stdio_server_async() -> int:
     # when tool handlers later call asyncio.to_thread().
     _preload_heavy_imports()
 
+    sys.stderr.write("Initializing logger...\n")
     logger = get_logger(log_level="INFO")
+    sys.stderr.write("Logger initialized.\n")
     logger.info("Starting MCP server (stdio transport) with official SDK.")
 
     # Create server with protocol handler
+    sys.stderr.write("Creating MCP server instance...\n")
     server = create_mcp_server(SERVER_NAME, SERVER_VERSION)
+    sys.stderr.write("MCP server instance created.\n")
 
     # Run with stdio transport
+    sys.stderr.write("Entering stdio_server context...\n")
     async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
         await server.run(
             read_stream,

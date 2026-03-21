@@ -22,6 +22,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api.deps import get_hybrid_search, get_llm, get_settings
+from src.ingestion.vendor_inference import infer_from_filename
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -49,24 +50,49 @@ class BidCompareRequest(BaseModel):
 
 @router.post("/search")
 async def bid_search(req: BidSearchRequest):
-    """Search products collection for matching products."""
+    """Search products collection for matching products (deduplicated by source)."""
     try:
         search = get_hybrid_search(req.collection)
-        results = search.search(query=req.query, top_k=req.top_k)
+        # Retrieve more chunks to ensure coverage, then deduplicate by source
+        results = search.search(query=req.query, top_k=50)
 
-        products = []
+        # Group by source_path, keep highest score chunk per source
+        source_best: Dict[str, Any] = {}
         for r in results:
             meta = r.metadata or {}
+            source = meta.get("source_path", "")
+            if not source:
+                continue
+            if source not in source_best or r.score > source_best[source]["score"]:
+                source_best[source] = {"result": r, "score": r.score}
+
+        # Build product list from unique sources
+        products = []
+        for source, item in source_best.items():
+            r = item["result"]
+            meta = r.metadata or {}
+            vendor = meta.get("product_vendor", "")
+            model = meta.get("product_model", "")
+            # Fallback: infer from filename when metadata is missing
+            if not vendor or not model:
+                inf_vendor, inf_model = infer_from_filename(source)
+                if not vendor:
+                    vendor = inf_vendor
+                if not model:
+                    model = inf_model
             products.append({
-                "source": meta.get("source_path", ""),
-                "score": round(r.score, 4),
+                "source": source,
+                "score": round(item["score"], 4),
                 "text": r.text[:500] if r.text else "",
-                "vendor": meta.get("product_vendor", ""),
-                "model": meta.get("product_model", ""),
+                "vendor": vendor,
+                "model": model,
                 "category": meta.get("product_category", ""),
             })
 
-        return {"ok": True, "data": products}
+        # Sort by score descending
+        products.sort(key=lambda x: x["score"], reverse=True)
+
+        return {"ok": True, "data": products[:req.top_k]}
     except Exception as e:
         logger.exception("Product search failed")
         return {"ok": False, "message": f"产品检索失败: {e}"}
@@ -75,89 +101,143 @@ async def bid_search(req: BidSearchRequest):
 # ── Step 2: Upload + Extract ─────────────────────────────────────
 
 
+def _sse(data: Dict[str, Any]) -> str:
+    """Format a dict as an SSE data line."""
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
 @router.post("/upload")
 async def bid_upload(
     file: UploadFile = File(...),
     doc_type: str = Form("vendor"),
     collection: str = Form("products"),
     official_id: Optional[int] = Form(None),
+    product_vendor: str = Form(""),
+    product_model: str = Form(""),
+    product_category: str = Form(""),
+    product_device: str = Form(""),
 ):
-    """Upload a vendor file (PDF/DOCX), ingest it, and extract params.
+    """Upload a vendor file, parse it, and extract params via SSE progress stream.
 
-    This combines file upload → ingestion → parameter extraction into
-    one step for the chat workflow.
+    The file is parsed and chunked locally (NOT ingested into the vector store).
+    Parameters are extracted from chunks via LLM and saved to the product DB.
 
-    Args:
-        file: The uploaded file.
-        doc_type: 'vendor' (default) or 'official'.
-        official_id: If provided, the ID of the official param record to
-                     compare against (used for automatic comparison).
+    SSE events:
+    - {type:'progress', stage, message, percent} — progress updates
+    - {type:'done', ok, data, vendor_param_ids, message} — final result
+    - {type:'error', message} — on failure
     """
-    try:
-        from src.bid.param_extractor import ChunkMeta, extract_params_from_chunks
+    filename = file.filename or "upload"
+    suffix = Path(filename).suffix.lower()
+    if suffix not in (".pdf", ".docx", ".doc"):
+        return StreamingResponse(
+            iter([_sse({"type": "error", "message": f"不支持的文件类型: {suffix}，仅支持 PDF/DOCX"})]),
+            media_type="text/event-stream",
+        )
+
+    # Read file content while still async
+    content = await file.read()
+
+    def event_stream():
+        from src.bid.param_extractor import (
+            ChunkMeta, _batch_chunks, extract_params_from_text,
+        )
         from src.bid.product_db import ProductParamRecord, save_params
-        from src.core.settings import load_settings
-        from src.ingestion.pipeline import IngestionPipeline
+        from src.libs.loader.loader_factory import LoaderFactory
+        from src.ingestion.chunking.document_chunker import DocumentChunker
 
-        filename = file.filename or "upload"
-        suffix = Path(filename).suffix.lower()
-        if suffix not in (".pdf", ".docx", ".doc"):
-            return {"ok": False, "message": f"不支持的文件类型: {suffix}，仅支持 PDF/DOCX"}
+        # ── Stage 1: Parse file (no ingestion) ───────────────────
+        yield _sse({"type": "progress", "stage": "parsing", "message": f"正在解析文件 \"{filename}\"...", "percent": 5})
 
-        # Save to temp and ingest
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
-            content = await file.read()
-            tmp.write(content)
-            tmp_path = tmp.name
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                tmp.write(content)
+                tmp_path = tmp.name
 
-        settings = load_settings()
-        pipeline = IngestionPipeline(settings, collection=collection)
-        result = pipeline.run(file_path=tmp_path, original_filename=filename)
-        Path(tmp_path).unlink(missing_ok=True)
+            loader = LoaderFactory.create(tmp_path)
+            document = loader.load(tmp_path)
+            Path(tmp_path).unlink(missing_ok=True)
 
-        if not result.success:
-            return {"ok": False, "message": result.error or "文件摄取失败"}
+            if not document or not document.text or not document.text.strip():
+                yield _sse({"type": "error", "message": "文件解析失败：未提取到文本内容"})
+                return
+        except Exception as e:
+            yield _sse({"type": "error", "message": f"文件解析失败: {e}"})
+            return
 
-        # Retrieve the chunks we just ingested
-        search = get_hybrid_search(collection)
-        results = search.search(query=filename, top_k=50)
+        yield _sse({"type": "progress", "stage": "chunking", "message": "正在分块...", "percent": 15})
 
-        # Filter to chunks from this specific document
+        # ── Stage 2: Chunk document ──────────────────────────────
+        try:
+            settings = get_settings()
+            chunker = DocumentChunker(settings)
+            chunks = chunker.split_document(document)
+        except Exception as e:
+            yield _sse({"type": "error", "message": f"文件分块失败: {e}"})
+            return
+
         chunk_metas: List[ChunkMeta] = []
-        for r in results:
-            meta = r.metadata or {}
-            source = meta.get("source_path", "")
-            if r.text and (filename in source or Path(filename).stem in source):
-                chunk_metas.append(ChunkMeta(
-                    text=r.text,
-                    page=int(meta.get("page_number", 0) or 0),
-                    section=meta.get("section", "") or meta.get("heading", ""),
-                    source=source,
-                ))
+        for c in chunks:
+            meta = c.metadata or {}
+            chunk_metas.append(ChunkMeta(
+                text=c.text,
+                page=int(meta.get("page_number", 0) or 0),
+                section=meta.get("heading_path", "") or meta.get("section", ""),
+                source=filename,
+            ))
+        chunk_metas.sort(key=lambda c: c.page)
 
         if not chunk_metas:
-            return {
-                "ok": True,
-                "message": f"文件已摄取 ({result.chunk_count} 个块)，但未找到可提取参数的内容",
-                "data": [],
-                "vendor_param_ids": [],
-            }
+            yield _sse({"type": "done", "ok": True, "data": [], "vendor_param_ids": [],
+                         "message": "文件已解析，但未生成有效分块"})
+            return
 
-        # Extract params via LLM
+        yield _sse({"type": "progress", "stage": "parsed", "message": f"解析完成，共 {len(chunk_metas)} 个分块", "percent": 20})
+
+        # ── Stage 3: Extract params batch by batch with progress ─
+        yield _sse({"type": "progress", "stage": "extracting", "message": f"正在提取参数（{len(chunk_metas)} 个分块）...", "percent": 25})
+
+        batches = _batch_chunks(chunk_metas)
+        total_batches = len(batches)
+        logger.info(f"Batched {len(chunk_metas)} chunks → {total_batches} LLM calls")
+
         llm = get_llm()
-        products = extract_params_from_chunks(llm, chunk_metas)
+        all_extractions: List[Dict[str, Any]] = []
 
-        if not products:
-            return {
-                "ok": True,
-                "message": "文件已摄取，但未检测到结构化技术参数",
-                "data": [],
-                "vendor_param_ids": [],
-            }
+        for i, (text, page, section) in enumerate(batches):
+            batch_pct = 25 + int(65 * (i / total_batches))
+            yield _sse({
+                "type": "progress", "stage": "extracting",
+                "message": f"正在提取参数（{i + 1}/{total_batches} 批）...",
+                "percent": batch_pct, "batch": i + 1, "total": total_batches,
+            })
 
-        # Save each extracted product
+            try:
+                products = extract_params_from_text(llm, text, page=page, section=section)
+                if products:
+                    all_extractions.append({"products": products})
+            except Exception as e:
+                logger.warning(f"Batch {i + 1} extraction failed: {e}")
+
+        if not all_extractions:
+            yield _sse({"type": "done", "ok": True, "data": [], "vendor_param_ids": [],
+                         "message": f"文件已解析（{len(chunk_metas)} 个分块），参数提取未返回结果"})
+            return
+
+        # ── Stage 4: Merge and save ──────────────────────────────
+        yield _sse({"type": "progress", "stage": "saving", "message": "正在合并和保存参数...", "percent": 92})
+
+        import sys
+        from src.core.settings import REPO_ROOT
+        scripts_dir = str(REPO_ROOT / ".github" / "skills" / "bid-param-extractor" / "scripts")
+        if scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        from merge_params import merge_product_params
+
+        merged = merge_product_params(all_extractions)
+
         saved_ids: List[int] = []
-        for p in products:
+        for p in merged:
             record = ProductParamRecord(
                 vendor=p.get("vendor", ""),
                 model=p.get("model", ""),
@@ -170,17 +250,139 @@ async def bid_upload(
             rid = save_params(record)
             saved_ids.append(rid)
 
+        total_params = sum(len(p.get("params", [])) for p in merged)
+        yield _sse({
+            "type": "done", "ok": True, "data": merged,
+            "vendor_param_ids": saved_ids,
+            "message": f"成功提取 {len(merged)} 个产品的参数（共 {total_params} 项）",
+        })
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ── Auto-extract official params from KB ──────────────────────────
+
+
+class ExtractOfficialRequest(BaseModel):
+    """Request to extract official params from knowledge base."""
+
+    query: str
+    vendor: str = ""
+    model: str = ""
+    category: str = ""
+    collection: str = "products"
+
+
+@router.post("/extract-official")
+async def extract_official_params(req: ExtractOfficialRequest):
+    """Extract official product params from existing KB chunks.
+
+    Called automatically before comparison when no official record exists.
+    Searches the knowledge base, groups chunks by source document,
+    extracts structured params from each source via LLM, and saves them
+    as doc_type='official'.
+    """
+    try:
+        from src.bid.param_extractor import ChunkMeta, extract_params_from_chunks
+        from src.bid.product_db import ProductParamRecord, save_params
+
+        search = get_hybrid_search(req.collection)
+        # Retrieve more chunks to ensure coverage across multiple sources
+        results = search.search(query=req.query, top_k=50)
+
+        # Group chunks by source_path and sort by page for complete coverage
+        source_chunks: Dict[str, List[ChunkMeta]] = {}
+        for r in results:
+            if not r.text:
+                continue
+            meta = r.metadata or {}
+            source = meta.get("source_path", "")
+            if not source:
+                continue
+            if source not in source_chunks:
+                source_chunks[source] = []
+            source_chunks[source].append(ChunkMeta(
+                text=r.text,
+                page=int(meta.get("page_number", 0) or 0),
+                section=meta.get("section", "") or meta.get("heading", ""),
+                source=source,
+            ))
+
+        # Sort each source's chunks by page number for sequential processing
+        for source in source_chunks:
+            source_chunks[source].sort(key=lambda c: c.page)
+
+        if not source_chunks:
+            return {"ok": False, "message": "知识库中未找到该产品的文档内容"}
+
+        logger.info(f"Found {len(source_chunks)} source documents for extraction")
+
+        # Extract params from each source document separately
+        llm = get_llm()
+        all_products: List[Dict[str, Any]] = []
+
+        for source, chunks in source_chunks.items():
+            logger.info(f"Extracting from {source}: {len(chunks)} chunks")
+            try:
+                # No chunk limit for official extraction - process all chunks
+                products = extract_params_from_chunks(llm, chunks, max_chunks=len(chunks))
+                if products:
+                    # Add source info to each product
+                    for p in products:
+                        p["_source"] = source
+                    all_products.extend(products)
+                    logger.info(f"Extracted {len(products)} products from {source}")
+            except Exception as e:
+                logger.warning(f"Extraction failed for {source}: {e}")
+                continue
+
+        if not all_products:
+            return {"ok": False, "message": "无法从知识库内容中提取结构化参数"}
+
+        # Merge products with same vendor+model from different sources
+        merged_products: Dict[str, Dict[str, Any]] = {}
+        for p in all_products:
+            key = f"{p.get('vendor', '')}|{p.get('model', '')}"
+            if key not in merged_products:
+                merged_products[key] = p
+            else:
+                # Merge params from same product across sources
+                existing = merged_products[key]
+                existing_params = {param.get("name"): param for param in existing.get("params", [])}
+                for param in p.get("params", []):
+                    name = param.get("name")
+                    if name and name not in existing_params:
+                        existing.get("params", []).append(param)
+                logger.info(f"Merged params from {p.get('_source')} into {key}")
+
+        final_products = list(merged_products.values())
+
+        # Save as official
+        saved_ids: List[int] = []
+        for p in final_products:
+            record = ProductParamRecord(
+                vendor=p.get("vendor", "") or req.vendor,
+                model=p.get("model", "") or req.model,
+                product_name=p.get("product_name", ""),
+                category=p.get("category", "") or req.category,
+                doc_type="official",
+                doc_source=f"KB:{req.collection}",
+                params=p.get("params", []),
+            )
+            rid = save_params(record)
+            saved_ids.append(rid)
+
         return {
             "ok": True,
-            "data": products,
-            "vendor_param_ids": saved_ids,
-            "message": f"成功提取 {len(products)} 个产品的参数（共 {sum(len(p.get('params', [])) for p in products)} 项）",
+            "data": final_products,
+            "official_param_ids": saved_ids,
+            "message": f"从知识库提取 {len(final_products)} 个产品的官方参数（来自 {len(source_chunks)} 个文档）",
         }
     except Exception as e:
-        logger.exception("Upload and extraction failed")
-        return {"ok": False, "message": f"上传处理失败: {e}"}
+        logger.exception("Official param extraction failed")
+        return {"ok": False, "message": f"官方参数提取失败: {e}"}
 
-
+# ... (rest of the code remains the same)
 # ── Step 3: Compare (SSE) ────────────────────────────────────────
 
 

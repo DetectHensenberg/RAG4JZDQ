@@ -24,6 +24,10 @@ def _make_fake_pipeline() -> IngestionPipeline:
     fp = object.__new__(IngestionPipeline)
     fp.collection = "test"
     fp.force = False
+    fp.skip_llm_transform = False
+    fp.settings = MagicMock()
+    fp.settings.ingestion = MagicMock()
+    fp.settings.ingestion.pdf_parser = "markitdown"
     fp._image_storage_dir = "data/images/test"
 
     # Stage 1: integrity
@@ -52,6 +56,8 @@ def _make_fake_pipeline() -> IngestionPipeline:
     fp.metadata_enricher.transform.return_value = chunks
     fp.image_captioner = MagicMock()
     fp.image_captioner.transform.return_value = chunks
+    fp.context_enricher = MagicMock()
+    fp.context_enricher.transform.return_value = chunks
 
     # Stage 5: encoding
     batch_result = MagicMock()

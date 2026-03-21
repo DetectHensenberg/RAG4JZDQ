@@ -99,15 +99,47 @@ def get_llm() -> Any:
 
 
 # ---------------------------------------------------------------------------
+# IngestionPipeline (cached per collection + skip_llm key)
+# ---------------------------------------------------------------------------
+
+_pipelines: dict[tuple[str, bool], Any] = {}
+
+
+def get_pipeline(collection: str = "default", skip_llm_transform: bool = False) -> Any:
+    """Return a cached IngestionPipeline, creating one if needed."""
+    key = (collection, skip_llm_transform)
+    if key in _pipelines:
+        return _pipelines[key]
+
+    from src.ingestion.pipeline import IngestionPipeline
+
+    pipeline = IngestionPipeline(
+        get_settings(),
+        collection=collection,
+        skip_llm_transform=skip_llm_transform,
+    )
+    _pipelines[key] = pipeline
+    logger.info(f"Pipeline cached: collection={collection}, skip_llm={skip_llm_transform}")
+    return pipeline
+
+
+# ---------------------------------------------------------------------------
 # Reset (called after config changes)
 # ---------------------------------------------------------------------------
 
 def reset_all() -> None:
     """Clear all cached instances — called after config update."""
-    global _hybrid_search, _hybrid_collection, _llm
+    global _hybrid_search, _hybrid_collection, _llm, _pipelines
     _hybrid_search = None
     _hybrid_collection = ""
     _llm = None
+    # Close pipeline resources before clearing
+    for p in _pipelines.values():
+        try:
+            p.close()
+        except Exception:
+            pass
+    _pipelines = {}
     get_settings.cache_clear()
     logger.info("All cached instances cleared")
 

@@ -32,6 +32,7 @@ dependencies = [
     # 配置与工具
     "pyyaml~=6.0.2",
     "httpx~=0.28.1",
+    "aiosqlite>=0.20.0",
     
     # LLM & Embedding
     "openai~=1.109.1",
@@ -47,6 +48,8 @@ dependencies = [
     "python-pptx>=1.0.0",        # PPTX 解析
     "pillow>=10.0.0",            # 图片处理
     "pytesseract>=0.3.10",       # OCR (需安装 Tesseract 二进制)
+    "python-docx>=0.8.11",       # Word 文档生成
+    "pdf2image>=1.16.0",         # PDF 转图片 (需安装 poppler)
     
     # 重排序
     "sentence-transformers>=3.0.0",  # Cross-Encoder 重排序

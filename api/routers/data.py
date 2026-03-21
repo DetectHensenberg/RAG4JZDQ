@@ -11,7 +11,7 @@ from typing import Any
 from fastapi import APIRouter
 from fastapi.responses import Response
 
-from api.db import get_connection
+from api.db import get_connection, get_async_connection
 from src.core.settings import resolve_path
 
 logger = logging.getLogger(__name__)
@@ -35,8 +35,10 @@ async def list_collections():
     try:
         db_path = resolve_path("data/db/chroma/chroma.sqlite3")
         if db_path.exists():
-            with get_connection(db_path, wal=False) as conn:
-                count = conn.execute("SELECT COUNT(*) FROM embeddings").fetchone()[0]
+            async with get_async_connection(db_path) as conn:
+                async with conn.execute("SELECT COUNT(*) FROM embeddings") as cursor:
+                    row = await cursor.fetchone()
+                    count = row[0]
             result = [{"name": c, "count": count if c == "default" else 0} for c in collections]
         else:
             result = [{"name": c, "count": 0} for c in collections]
@@ -55,17 +57,22 @@ async def list_documents(collection: str = "default", page: int = 1, size: int =
             return {"ok": True, "data": {"items": [], "total": 0}}
 
         with get_connection(hist_path) as conn:
-            total = conn.execute(
-                "SELECT COUNT(*) FROM ingestion_history WHERE status='success' AND collection=?",
-                (collection,),
-            ).fetchone()[0]
+            # We can convert this to async easily
+            async with get_async_connection(hist_path) as aconn:
+                async with aconn.execute(
+                    "SELECT COUNT(*) FROM ingestion_history WHERE status='success' AND collection=?",
+                    (collection,)
+                ) as cursor:
+                    row = await cursor.fetchone()
+                    total = row[0] if row else 0
 
-            offset = (page - 1) * size
-            rows = conn.execute(
-                "SELECT file_hash, file_path, collection, status, processed_at FROM ingestion_history "
-                "WHERE status='success' AND collection=? ORDER BY processed_at DESC LIMIT ? OFFSET ?",
-                (collection, size, offset),
-            ).fetchall()
+                offset = (page - 1) * size
+                async with aconn.execute(
+                    "SELECT file_hash, file_path, collection, status, processed_at FROM ingestion_history "
+                    "WHERE status='success' AND collection=? ORDER BY processed_at DESC LIMIT ? OFFSET ?",
+                    (collection, size, offset)
+                ) as cursor:
+                    rows = await cursor.fetchall()
 
         items = [
             {"file_hash": r[0], "source_path": r[1], "collection": r[2], "status": r[3], "created_at": r[4]}
@@ -84,14 +91,15 @@ async def get_chunks(file_hash: str):
         if not db_path.exists():
             return {"ok": True, "data": []}
 
-        with get_connection(db_path, wal=False) as conn:
+        async with get_async_connection(db_path) as conn:
             # Find embedding IDs matching the file hash prefix
-            rows = conn.execute(
+            async with conn.execute(
                 "SELECT e.embedding_id, em.string_value "
                 "FROM embeddings e JOIN embedding_metadata em ON e.id = em.id "
                 "WHERE em.key = 'text' AND e.embedding_id LIKE ?",
-                (f"{file_hash[:8]}%",),
-            ).fetchall()
+                (f"{file_hash[:8]}%",)
+            ) as cursor:
+                rows = await cursor.fetchall()
 
         chunks = [{"id": r[0], "text": r[1][:500] if r[1] else ""} for r in rows]
         return {"ok": True, "data": chunks}
@@ -109,7 +117,10 @@ async def get_image(image_id: str, collection: str = "default"):
         db_path = resolve_path("data/db/image_index.db")
         
         storage = ImageStorage(str(db_path), str(images_root))
-        img_path = storage.get_image_path(image_id)
+        if hasattr(storage, "aget_image_path"):
+            img_path = await storage.aget_image_path(image_id)
+        else:
+            img_path = storage.get_image_path(image_id)
         
         if not img_path:
             return {"ok": False, "message": f"Image not found: {image_id}"}
@@ -156,7 +167,10 @@ async def get_image_raw(image_id: str, collection: str = "default"):
         db_path = resolve_path("data/db/image_index.db")
         
         storage = ImageStorage(str(db_path), str(images_root))
-        img_path = storage.get_image_path(image_id)
+        if hasattr(storage, "aget_image_path"):
+            img_path = await storage.aget_image_path(image_id)
+        else:
+            img_path = storage.get_image_path(image_id)
         
         if not img_path:
             return Response(content=b"Image not found", status_code=404)

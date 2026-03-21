@@ -338,6 +338,31 @@ class ImageStorage:
             return str(p)
         finally:
             conn.close()
+
+    async def aget_image_path(self, image_id: str) -> Optional[str]:
+        """Get filesystem path for an image by ID asynchronously.
+        
+        Args:
+            image_id: Unique identifier for the image.
+            
+        Returns:
+            Absolute file path if image exists, None otherwise.
+        """
+        import aiosqlite
+        
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(
+                "SELECT file_path FROM image_index WHERE image_id = ?",
+                (image_id,)
+            ) as cursor:
+                result = await cursor.fetchone()
+                if not result:
+                    return None
+                stored_path = result[0]
+                p = Path(stored_path)
+                if not p.is_absolute():
+                    p = self.images_root / p
+                return str(p)
     
     def image_exists(self, image_id: str) -> bool:
         """Check if image exists in database.
