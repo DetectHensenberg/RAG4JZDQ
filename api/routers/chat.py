@@ -23,34 +23,45 @@ from src.core.response.multimodal_assembler import MultimodalAssembler
 from src.ingestion.storage.image_storage import ImageStorage
 
 
-@lru_cache(maxsize=512)
-def _is_background_image(img_path: str, min_edge: float = 8.0, min_dim: int = 150) -> bool:
+async def _is_background_image(img_id: str, img_path: str, storage: ImageStorage, min_edge: float = 8.0, min_dim: int = 150) -> bool:
     """Return True if the image looks like a PPT background / decoration.
 
-    Uses gradient-based edge strength: real content (tables, diagrams, text)
-    has edge > 8, while gradients and solid backgrounds have edge < 5.
-    Results are cached (LRU) to avoid repeated PIL/numpy computation.
+    Uses gradient-based edge strength. Results are persisted in SQLite to avoid
+    repeated computation across sessions.
     """
     try:
+        # 1. Check metadata in DB first
+        meta = await storage.aget_image_metadata(img_id)
+        if meta and meta.get("is_background") is not None:
+            # logger.debug(f"[perf] Background cache hit (DB) for {img_id}: {meta['is_background']}")
+            return bool(meta["is_background"])
+
+        # 2. Compute if not in DB
         from PIL import Image
         import numpy as np
 
         img = Image.open(img_path).convert("RGB")
         w, h = img.size
+        # Small icons are often decorative
         if w < min_dim or h < min_dim:
-            return True  # too small (icon)
+            is_bg = 1
+        else:
+            # Down-sample large images for speed
+            if w > 800 or h > 800:
+                img.thumbnail((800, 800))
 
-        # Down-sample large images for speed
-        if w > 800 or h > 800:
-            img.thumbnail((800, 800))
-
-        arr = np.array(img, dtype=np.float32)
-        gray = arr.mean(axis=2)
-        gx = np.diff(gray, axis=1)
-        gy = np.diff(gray, axis=0)
-        edge_strength = (np.abs(gx).mean() + np.abs(gy).mean()) / 2.0
-        return edge_strength < min_edge
-    except Exception:
+            arr = np.array(img, dtype=np.float32)
+            gray = arr.mean(axis=2)
+            gx = np.diff(gray, axis=1)
+            gy = np.diff(gray, axis=0)
+            edge_strength = (np.abs(gx).mean() + np.abs(gy).mean()) / 2.0
+            is_bg = 1 if edge_strength < min_edge else 0
+        
+        # 3. Persist result
+        await storage.aupdate_image_metadata(img_id, is_background=is_bg)
+        return bool(is_bg)
+    except Exception as e:
+        logger.warning(f"Background analysis failed for {img_id}: {e}")
         return False  # if analysis fails, keep the image
 from src.libs.llm.base_llm import Message
 
@@ -158,26 +169,34 @@ SYSTEM_PROMPT = """你是一位专业的系统方案架构师。基于提供的�
 """
 
 
-def _strip_background_images(text: str, collection: str = "default") -> str:
+async def _strip_background_images(text: str, collection: str = "default") -> str:
     """Remove [IMAGE: id] references for background / decorative images."""
     image_storage = ImageStorage()
-
-    def _check_replace(m: re.Match) -> str:
+    
+    # find all placeholders
+    matches = list(re.finditer(r"\[IMAGE:\s*([^\]]+)\](?:\s*\n\(Description:[^\)]*\))?\s*\n?", text))
+    if not matches:
+        return text
+        
+    valid_ids = {}
+    for m in matches:
         img_id = m.group(1).strip()
-        img_path = image_storage.get_image_path(img_id)
-        if not img_path:
-            logger.debug(f"[ctx-filter] {img_id}: path not found, keeping")
-            return m.group(0)
-        if _is_background_image(img_path):
-            logger.debug(f"[ctx-filter] {img_id}: background, stripping")
-            return ""  # strip background image reference
-        logger.debug(f"[ctx-filter] {img_id}: OK, keeping")
-        return m.group(0)  # keep it
+        if img_id not in valid_ids:
+            img_path = await image_storage.aget_image_path(img_id)
+            if not img_path:
+                valid_ids[img_id] = True # Keep if not found, it might be hallucinated or external
+            elif await _is_background_image(img_id, img_path, image_storage):
+                valid_ids[img_id] = False
+            else:
+                valid_ids[img_id] = True
 
-    # Match [IMAGE: id] optionally followed by (Description: ...) on next line
+    def _replacer(m: re.Match) -> str:
+        img_id = m.group(1).strip()
+        return m.group(0) if valid_ids.get(img_id) else ""
+
     return re.sub(
         r"\[IMAGE:\s*([^\]]+)\](?:\s*\n\(Description:[^\)]*\))?\s*\n?",
-        _check_replace,
+        _replacer,
         text,
     )
 
@@ -276,7 +295,6 @@ async def chat_stream(req: ChatRequest):
     async def event_stream():
         question = req.question
         references: List[Dict[str, Any]] = []
-        images: List[Dict[str, Any]] = []
         context = ""
 
         # Step 0: Check L3 answer cache (FAQ-type questions)
@@ -285,14 +303,12 @@ async def chat_stream(req: ChatRequest):
         
         if cached_answer is not None:
             logger.info(f"[perf] L3 answer cache HIT for: {question[:50]}...")
-            # Return cached answer immediately
             yield f"data: {json.dumps({'type': 'references', 'data': cached_answer.sources}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'token', 'content': cached_answer.answer}, ensure_ascii=False)}\n\n"
             yield f"data: {json.dumps({'type': 'done', 'answer': cached_answer.answer, 'cache_hit': True}, ensure_ascii=False)}\n\n"
             return
 
-        # Step 1: Retrieve — then immediately send references so frontend
-        #         shows them while LLM streams.
+        # Step 1: Retrieve
         try:
             t0 = time.perf_counter()
             search = get_hybrid_search(req.collection)
@@ -310,7 +326,57 @@ async def chat_stream(req: ChatRequest):
             yield f"data: {json.dumps({'type': 'error', 'message': f'检索失败: {e}'}, ensure_ascii=False)}\n\n"
             return
 
-        # Step 2: Build messages + stream LLM immediately (no gallery delay)
+        # --- Optimization: Parallel Image Processing ---
+        import asyncio
+        from src.core.response.multimodal_assembler import MultimodalAssembler
+
+        async def _extract_images_background(results_list, question_text, coll):
+            """Task to run image processing in background."""
+            try:
+                t2 = time.perf_counter()
+                image_storage = ImageStorage()
+                assembler = MultimodalAssembler(image_storage)
+                MIN_IMAGE_SIZE = 10_000
+                MAX_GALLERY_IMAGES = 6
+                scored_images = []
+                total_results = len(results_list)
+                
+                for r_rank, r_obj in enumerate(results_list):
+                    for img_ref in assembler.extract_image_refs(r_obj):
+                        path = await assembler.aresolve_image_path(img_ref, coll)
+                        if not path: continue
+                        try:
+                            if Path(path).stat().st_size < MIN_IMAGE_SIZE: continue
+                        except OSError: continue
+                        
+                        if await _is_background_image(img_ref.image_id, path, image_storage):
+                            continue
+                            
+                        rel = _calculate_image_relevance(
+                            question_text, img_ref.caption, r_obj.score,
+                            rank=r_rank, total_results=total_results,
+                        )
+                        if rel >= IMAGE_RELEVANCE_THRESHOLD:
+                            scored_images.append({
+                                "image_id": img_ref.image_id,
+                                "path": path,
+                                "caption": img_ref.caption,
+                                "source": r_obj.metadata.get("source_path", ""),
+                                "relevance": round(rel, 3),
+                                "chunk_score": round(r_obj.score, 3),
+                            })
+                final_imgs = sorted(scored_images, key=lambda x: x["relevance"], reverse=True)[:MAX_GALLERY_IMAGES]
+                logger.info(f"[perf] background gallery: {time.perf_counter()-t2:.2f}s ({len(final_imgs)} imgs)")
+                return final_imgs
+            except Exception as e_bg:
+                logger.warning(f"Background image extraction failed: {e_bg}")
+                return []
+
+        # Start the background task immediately after retrieval
+        image_task = asyncio.create_task(_extract_images_background(results, question, req.collection))
+        images_sent = False
+
+        # Step 2: Build messages + stream LLM
         messages = [Message(role="system", content=SYSTEM_PROMPT)]
         if context:
             messages.append(Message(role="user", content=f"参考资料:\n{context}\n\n问题: {question}"))
@@ -326,105 +392,56 @@ async def chat_stream(req: ChatRequest):
             for chunk in llm.chat_stream(messages, max_tokens=req.max_tokens):
                 full_answer += chunk
                 yield f"data: {json.dumps({'type': 'token', 'content': chunk}, ensure_ascii=False)}\n\n"
+                
+                # Try to push images early if they are ready while streaming
+                if not images_sent and image_task.done():
+                    gallery_result = image_task.result()
+                    yield f"data: {json.dumps({'type': 'images', 'data': gallery_result}, ensure_ascii=False)}\n\n"
+                    images_sent = True
+
             logger.info(f"[perf] LLM stream: {time.perf_counter()-t1:.2f}s")
         except Exception as e:
             logger.exception("LLM generation failed")
             yield f"data: {json.dumps({'type': 'error', 'message': f'生成失败: {e}'}, ensure_ascii=False)}\n\n"
             return
 
+        # Ensure images are sent even if LLM finishes before image_task
+        if not images_sent:
+            gallery_result = await image_task
+            yield f"data: {json.dumps({'type': 'images', 'data': gallery_result}, ensure_ascii=False)}\n\n"
+            images_sent = True
+
         # Step 3: Sanitize answer — strip hallucinated IDs + background images
         async def _strip_bad_images(text: str) -> str:
             _img_storage = ImageStorage()
-            # find all placeholders
             matches = list(re.finditer(r"\[IMAGE:\s*([^\]]+)\]", text))
-            if not matches:
-                return text
-                
-            # fetch paths async
+            if not matches: return text
             valid_ids = {}
             for m in matches:
                 img_id = m.group(1).strip()
                 if img_id not in valid_ids:
                     img_path = await _img_storage.aget_image_path(img_id)
                     if not img_path:
-                        logger.info(f"Stripped hallucinated image ref: [IMAGE: {img_id}]")
                         valid_ids[img_id] = False
-                    elif _is_background_image(img_path):
-                        logger.info(f"Stripped background image ref: [IMAGE: {img_id}]")
+                    elif await _is_background_image(img_id, img_path, _img_storage):
                         valid_ids[img_id] = False
                     else:
                         valid_ids[img_id] = True
-            
-            def _replacer(m: re.Match) -> str:
-                img_id = m.group(1).strip()
-                return m.group(0) if valid_ids.get(img_id) else ""
-                
-            return re.sub(r"\[IMAGE:\s*([^\]]+)\]", _replacer, text)
+            return re.sub(r"\[IMAGE:\s*([^\]]+)\]", lambda m: m.group(0) if valid_ids.get(m.group(1).strip()) else "", text)
 
         full_answer = await _strip_bad_images(full_answer)
 
-        # Step 4: Gallery extraction (AFTER LLM, so it doesn't delay first token)
-        try:
-            t2 = time.perf_counter()
-            image_storage = ImageStorage()
-            assembler = MultimodalAssembler(image_storage)
-            MIN_IMAGE_SIZE = 10_000
-            MAX_GALLERY_IMAGES = 6
-            scored_images = []
-            total_results = len(results)
-            for rank, r in enumerate(results):
-                for ref in assembler.extract_image_refs(r):
-                    img_path = await assembler.aresolve_image_path(ref, req.collection)
-                    if not img_path:
-                        continue
-                    try:
-                        file_size = Path(img_path).stat().st_size
-                        if file_size < MIN_IMAGE_SIZE:
-                            continue
-                    except OSError:
-                        continue
-                    if _is_background_image(img_path):
-                        continue
-                    relevance = _calculate_image_relevance(
-                        question, ref.caption, r.score,
-                        rank=rank, total_results=total_results,
-                    )
-                    if relevance >= IMAGE_RELEVANCE_THRESHOLD:
-                        scored_images.append({
-                            "image_id": ref.image_id,
-                            "path": img_path,
-                            "caption": ref.caption,
-                            "source": r.metadata.get("source_path", ""),
-                            "relevance": round(relevance, 3),
-                            "chunk_score": round(r.score, 3),
-                        })
-            images = sorted(scored_images, key=lambda x: x["relevance"], reverse=True)[:MAX_GALLERY_IMAGES]
-            logger.info(f"[perf] gallery: {time.perf_counter()-t2:.2f}s ({len(images)} imgs)")
-        except Exception as e:
-            logger.warning(f"Failed to extract images: {e}")
-
-        # Always send images event (even if empty) so frontend can update correctly
-        logger.info(f"[DEBUG] Sending images event with {len(images)} images")
-        yield f"data: {json.dumps({'type': 'images', 'data': images}, ensure_ascii=False)}\n\n"
-
-        logger.info(f"[DEBUG] Sending done event")
+        # Done event
         yield f"data: {json.dumps({'type': 'done', 'answer': full_answer}, ensure_ascii=False)}\n\n"
 
-        # Save to L3 answer cache (for FAQ-type repeated queries)
+        # Caching & History
         try:
-            answer_cache.put(
-                query=question,
-                answer=full_answer,
-                sources=references,
-                metadata={"collection": req.collection, "top_k": req.top_k},
-            )
-            logger.debug(f"Stored answer in L3 cache for: {question[:50]}...")
-        except Exception as e:
-            logger.warning(f"Failed to cache answer: {e}")
-
-        # Save to history
+            answer_cache.put(query=question, answer=full_answer, sources=references, metadata={"collection": req.collection})
+        except Exception: pass
         await _asave_history(question, full_answer, references)
         logger.info(f"[perf] total: {time.perf_counter()-t0:.2f}s")
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

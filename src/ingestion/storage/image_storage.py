@@ -14,7 +14,7 @@ import sqlite3
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional, List, Dict, Union
+from typing import Optional, List, Dict, Union, Any
 
 
 class ImageStorage:
@@ -116,6 +116,7 @@ class ImageStorage:
                     collection TEXT,
                     doc_hash TEXT,
                     page_num INTEGER,
+                    is_background INTEGER,
                     created_at TEXT NOT NULL
                 )
             """)
@@ -363,6 +364,63 @@ class ImageStorage:
                 if not p.is_absolute():
                     p = self.images_root / p
                 return str(p)
+
+    async def aget_image_metadata(self, image_id: str) -> Optional[Dict[str, Any]]:
+        """Get full metadata for an image asynchronously.
+        
+        Args:
+            image_id: Unique identifier for the image.
+            
+        Returns:
+            Dictionary of metadata if exists, None otherwise.
+        """
+        import aiosqlite
+        
+        async with aiosqlite.connect(self.db_path) as conn:
+            conn.row_factory = aiosqlite.Row
+            async with conn.execute(
+                "SELECT * FROM image_index WHERE image_id = ?",
+                (image_id,)
+            ) as cursor:
+                row = await cursor.fetchone()
+                if not row:
+                    return None
+                data = dict(row)
+                # Resolve path
+                p = Path(data["file_path"])
+                if not p.is_absolute():
+                    p = self.images_root / p
+                data["file_path"] = str(p)
+                return data
+
+    async def aupdate_image_metadata(self, image_id: str, **kwargs) -> bool:
+        """Update specific metadata fields for an image asynchronously.
+        
+        Args:
+            image_id: Unique identifier for the image.
+            **kwargs: Fields to update (e.g., is_background=1).
+            
+        Returns:
+            True if updated, False otherwise.
+        """
+        if not kwargs:
+            return False
+            
+        import aiosqlite
+        
+        fields = []
+        values = []
+        for k, v in kwargs.items():
+            fields.append(f"{k} = ?")
+            values.append(v)
+        values.append(image_id)
+        
+        query = f"UPDATE image_index SET {', '.join(fields)} WHERE image_id = ?"
+        
+        async with aiosqlite.connect(self.db_path) as conn:
+            async with conn.execute(query, values) as cursor:
+                await conn.commit()
+                return cursor.rowcount > 0
     
     def image_exists(self, image_id: str) -> bool:
         """Check if image exists in database.
