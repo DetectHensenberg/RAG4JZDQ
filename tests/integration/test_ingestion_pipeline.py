@@ -54,7 +54,8 @@ class TestIngestionPipeline:
         assert path.exists(), f"Test fixture not found: {path}"
         return str(path)
     
-    def test_pipeline_with_complex_technical_doc(self, settings, complex_pdf_path):
+    @pytest.mark.asyncio
+    async def test_pipeline_with_complex_technical_doc(self, settings, complex_pdf_path):
         """Test full pipeline with complex technical document.
         
         This test validates:
@@ -78,7 +79,7 @@ class TestIngestionPipeline:
         
         try:
             # Run the pipeline
-            result = pipeline.run(complex_pdf_path)
+            result = await pipeline.run(complex_pdf_path)
             
             # ─────────────────────────────────────────────────────────────
             # Assertions
@@ -167,14 +168,15 @@ class TestIngestionPipeline:
         finally:
             pipeline.close()
     
-    def test_pipeline_skip_already_processed(self, settings, simple_pdf_path):
+    @pytest.mark.asyncio
+    async def test_pipeline_skip_already_processed(self, settings, simple_pdf_path):
         """Test that pipeline skips already processed files."""
         collection = "test_skip"
         
         # First run - should process
         pipeline1 = IngestionPipeline(settings, collection=collection, force=True)
         try:
-            result1 = pipeline1.run(simple_pdf_path)
+            result1 = await pipeline1.run(simple_pdf_path)
             assert result1.success
             assert result1.chunk_count > 0
         finally:
@@ -183,7 +185,7 @@ class TestIngestionPipeline:
         # Second run without force - should skip
         pipeline2 = IngestionPipeline(settings, collection=collection, force=False)
         try:
-            result2 = pipeline2.run(simple_pdf_path)
+            result2 = await pipeline2.run(simple_pdf_path)
             assert result2.success
             assert "integrity" in result2.stages
             assert result2.stages["integrity"].get("skipped") == True
@@ -191,14 +193,15 @@ class TestIngestionPipeline:
         finally:
             pipeline2.close()
     
-    def test_pipeline_force_reprocess(self, settings, simple_pdf_path):
+    @pytest.mark.asyncio
+    async def test_pipeline_force_reprocess(self, settings, simple_pdf_path):
         """Test that force=True reprocesses even if already done."""
         collection = "test_force"
         
         # First run
         pipeline1 = IngestionPipeline(settings, collection=collection, force=True)
         try:
-            result1 = pipeline1.run(simple_pdf_path)
+            result1 = await pipeline1.run(simple_pdf_path)
             assert result1.success
             chunk_count1 = result1.chunk_count
         finally:
@@ -207,7 +210,7 @@ class TestIngestionPipeline:
         # Second run with force - should reprocess
         pipeline2 = IngestionPipeline(settings, collection=collection, force=True)
         try:
-            result2 = pipeline2.run(simple_pdf_path)
+            result2 = await pipeline2.run(simple_pdf_path)
             assert result2.success
             assert result2.chunk_count == chunk_count1
             assert result2.stages.get("integrity", {}).get("skipped") != True

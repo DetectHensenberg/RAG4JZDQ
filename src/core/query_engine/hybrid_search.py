@@ -28,8 +28,11 @@ if TYPE_CHECKING:
     from src.core.query_engine.dense_retriever import DenseRetriever
     from src.core.query_engine.fusion import RRFFusion
     from src.core.query_engine.query_processor import QueryProcessor
+    from src.core.query_engine.strategy_router import StrategyRouter
     from src.core.query_engine.sparse_retriever import SparseRetriever
     from src.core.settings import Settings
+    from src.ingestion.storage.parent_store import ParentStore
+    from src.ingestion.storage.graph_store import GraphStore
 
 logger = logging.getLogger(__name__)
 
@@ -168,6 +171,9 @@ class HybridSearch:
         self.sparse_retriever = sparse_retriever
         self.fusion = fusion
         self.reranker = reranker
+        self.parent_store: Optional[Any] = None  # ParentStore, set externally for Parent Retrieval
+        self.graph_store: Optional[Any] = None   # GraphStore, set externally for GraphRAG
+        self.strategy_router: Optional[Any] = None  # StrategyRouter, set externally
         
         # Extract config from settings or use provided/default
         self.config = config or self._extract_config(settings)
@@ -328,6 +334,7 @@ class HybridSearch:
             fused_results = self._fuse_results(
                 dense_results=dense_results or [],
                 sparse_results=sparse_results or [],
+                weights=processed_query.intent_weights,
                 top_k=fusion_top_k,
                 trace=trace,
             )
@@ -382,7 +389,14 @@ class HybridSearch:
                 logger.warning(f"Failed to store in retrieval cache: {e}")
         
         logger.debug(f"HybridSearch: returning {len(final_results)} results")
-        
+
+        if self.strategy_router is not None:
+            routing = self.strategy_router.route(query, trace=trace)
+            if routing.use_parent_retrieval and self.parent_store is not None:
+                final_results = self._expand_with_parents(final_results)
+            if routing.use_graph_rag and self.graph_store is not None:
+                final_results = self._expand_with_graph(final_results, query)
+
         if return_details:
             return HybridSearchResult(
                 results=final_results,
@@ -669,7 +683,8 @@ class HybridSearch:
         dense_results: List[RetrievalResult],
         sparse_results: List[RetrievalResult],
         top_k: int,
-        trace: Optional[Any],
+        weights: Optional[List[float]] = None,
+        trace: Optional[Any] = None,
     ) -> List[RetrievalResult]:
         """Fuse Dense and Sparse results using RRF.
         
@@ -677,6 +692,7 @@ class HybridSearch:
             dense_results: Results from dense retrieval.
             sparse_results: Results from sparse retrieval.
             top_k: Number of results to return after fusion.
+            weights: Optional weights for [dense, sparse].
             trace: Optional TraceContext.
             
         Returns:
@@ -702,8 +718,9 @@ class HybridSearch:
             return ranking_lists[0][:top_k]
         
         _t0 = time.monotonic()
-        fused = self.fusion.fuse(
+        fused = self.fusion.fuse_with_weights(
             ranking_lists=ranking_lists,
+            weights=weights,
             top_k=top_k,
             trace=trace,
         )
@@ -1019,3 +1036,123 @@ def create_hybrid_search(
         sparse_retriever=sparse_retriever,
         fusion=fusion,
     )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Context Expansion Methods (Parent Retrieval + GraphRAG)
+# These are added as top-level helpers called by HybridSearch.search()
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _expand_results_with_parents(
+    results: List[RetrievalResult],
+    parent_store: Any,
+) -> List[RetrievalResult]:
+    """Replace child chunk text with parent chunk text for context expansion.
+    
+    For each result that has a 'parent_id' in metadata, fetches the parent text
+    from ParentStore and replaces the result text to provide broader context.
+    
+    Args:
+        results: List of retrieval results (may include child chunks).
+        parent_store: ParentStore instance for fetching parent texts.
+        
+    Returns:
+        Updated results list with parent texts where available.
+    """
+    parent_ids = [r.metadata.get("parent_id") for r in results if r.metadata.get("parent_id")]
+    if not parent_ids:
+        return results
+    
+    try:
+        parent_texts = parent_store.get_parent_texts(parent_ids)
+    except Exception as e:
+        logger.warning(f"Parent store fetch failed: {e}")
+        return results
+    
+    expanded = []
+    for r in results:
+        pid = r.metadata.get("parent_id")
+        if pid and pid in parent_texts:
+            expanded.append(RetrievalResult(
+                chunk_id=r.chunk_id,
+                score=r.score,
+                text=parent_texts[pid],
+                metadata={**r.metadata, "context_expanded": True, "original_text_len": len(r.text)},
+            ))
+        else:
+            expanded.append(r)
+    
+    logger.debug(f"Parent expansion: {sum(1 for r in expanded if r.metadata.get('context_expanded'))} results expanded")
+    return expanded
+
+
+def _expand_results_with_graph(
+    results: List[RetrievalResult],
+    query: str,
+    graph_store: Any,
+    max_rels_per_result: int = 3,
+) -> List[RetrievalResult]:
+    """Append graph relationship context to result texts.
+    
+    For each result, extracts entity-like terms from the query and searches
+    the GraphStore for 1-hop neighbors. Appends found relationships as
+    additional context to the result text.
+    
+    Args:
+        results: List of retrieval results.
+        query: Original query string for entity extraction.
+        graph_store: GraphStore instance for graph lookup.
+        max_rels_per_result: Maximum graph relations to append per result.
+        
+    Returns:
+        Results with graph context appended to text where relevant.
+    """
+    import re
+    # Extract candidate entity names from query (capitalized words and CJK terms)
+    query_terms = list(set(re.findall(r'\b[A-Z][a-zA-Z]+\b|\b\w{2,}\b', query)))[:5]
+    
+    if not query_terms:
+        return results
+    
+    graph_context_parts = []
+    for term in query_terms:
+        try:
+            neighbors = graph_store.get_neighbors(term, max_hops=1)
+            for rel in neighbors[:max_rels_per_result]:
+                graph_context_parts.append(
+                    f"[Graph] {rel['from']} -[{rel['relation']}]-> {rel['to']}: {rel.get('to_description', '')}"
+                )
+        except Exception:
+            continue
+    
+    if not graph_context_parts:
+        return results
+    
+    graph_context = "\n".join(graph_context_parts[:5])  # Limit total graph context
+    expanded = []
+    for r in results:
+        enhanced_text = r.text + "\n\n---\n" + graph_context
+        expanded.append(RetrievalResult(
+            chunk_id=r.chunk_id,
+            score=r.score,
+            text=enhanced_text,
+            metadata={**r.metadata, "graph_context_appended": True},
+        ))
+    
+    logger.debug(f"GraphRAG: appended {len(graph_context_parts)} relations to {len(expanded)} results")
+    return expanded
+
+
+# Bind as instance methods to HybridSearch
+def _hs_expand_with_parents(self, results: List[RetrievalResult]) -> List[RetrievalResult]:
+    """Instance method wrapper for parent expansion."""
+    return _expand_results_with_parents(results, self.parent_store)
+
+
+def _hs_expand_with_graph(self, results: List[RetrievalResult], query: str) -> List[RetrievalResult]:
+    """Instance method wrapper for graph expansion."""
+    return _expand_results_with_graph(results, query, self.graph_store)
+
+
+HybridSearch._expand_with_parents = _hs_expand_with_parents  # type: ignore[attr-defined]
+HybridSearch._expand_with_graph = _hs_expand_with_graph  # type: ignore[attr-defined]

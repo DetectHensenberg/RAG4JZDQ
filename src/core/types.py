@@ -252,6 +252,7 @@ class ProcessedQuery:
     keywords: List[str] = field(default_factory=list)
     filters: Dict[str, Any] = field(default_factory=dict)
     expanded_terms: List[str] = field(default_factory=list)
+    intent_weights: List[float] = field(default_factory=lambda: [1.0, 1.0])
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for serialization."""

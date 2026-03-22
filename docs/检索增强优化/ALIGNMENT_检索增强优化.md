@@ -1,247 +1,37 @@
-# ALIGNMENT: 检索增强优化
+# ALIGNMENT: 检索增强优化 (GraphRAG & Parent Document Retriever)
 
-> 6A 工作流 - Phase 1: Align（对齐阶段）
-> 创建时间：2026-03-17
+## 项目背景
+当前 RAG 系统采用基础的 Chunk-based 检索。对于需要跨文档归纳、系统性总结的问题，容易出现“文脉断层”或召回片段过于细碎导致回答片面的问题。
 
----
+## 需求理解与边界确认
+本项目旨在通过两项核心优化提升检索深度与上下文连贯性：
 
-## 1. 项目上下文分析
+### 1. Parent Document Retriever (父文档召回)
+- **目标**：在向量库中使用较细的视角（Small Chunk）确保召回精度，但在喂给 LLM 时使用包含更多上下文的视角（Parent Chunk / Large Chunk）。
+- **逻辑**：
+  - Ingestion: 对文档进行二级切分（Parent -> Children）。
+  - Storage: Children 存储向量，Parent 存储文本（及 parent_id 关联）。
+  - Retrieval: 搜到 Child 后，根据 `parent_id` 自动溯源并返回其 Parent 的文本。
 
-### 1.1 技术栈
+### 2. GraphRAG (知识图谱增强检索)
+- **目标**：通过提取文档中的实体（Entity）与关系（Relationship），构建知识图谱，解决跨文档的宏观关联问题。
+- **逻辑**：
+  - Ingestion: 增加 Transform 节点，利用 LLM 提取 (S, P, O) 三元组或关键实体。
+  - Storage: 将关系网持久化（初期采用简易 SQLite 关系表）。
+  - Retrieval: 基于查询关键词在图中进行 1-2 跳路径搜索，作为补充上下文。
 
-| 层级 | 技术选型 |
-|------|---------|
-| 语言 | Python 3.10+ |
-| 包管理 | pyproject.toml (hatchling) |
-| Web 框架 | FastAPI (api/) + Streamlit (Dashboard) |
-| 向量数据库 | ChromaDB |
-| LLM | DashScope (qwen3.5-plus) OpenAI 兼容 API |
-| Embedding | DashScope text-embedding-v3 (1024 维) |
-| 分词 | jieba |
-| 测试 | pytest |
+## 技术实现方案
+- **分块策略**：扩展 `DocumentChunker` 支持 `hierarchical` 模式。
+- **处理流水线**：在 `IngestionPipeline` 中新增 `GraphExtractor` 变换。
+- **检索逻辑**：在 `HybridSearch` 中引入两阶段处理逻辑（检索 -> 溯源/图扩展 -> 排序）。
 
-### 1.2 项目架构
+## 疑问与决策
+- [ ] **Parent Chunk 存储位置**：是存入 ChromaDB 的 metadata（受限）还是存入单独的 DocStore？
+  - *决策建议*：初期可尝试存入一个本地简单 KV 存储（如 SQLite 或 JSON 文件），避免 ChromaDB 元数据过大导致性能下降。
+- [ ] **图提取开销**：LLM 提取三元组成本较高。
+  - *决策建议*：提供开启开关，并仅针对高质量/长文档任务启用。
 
-```
-src/
-├── core/           # 核心类型、设置、查询引擎
-│   ├── types.py    # Document, Chunk, RetrievalResult
-│   ├── settings.py # 配置加载
-│   └── query_engine/
-│       ├── hybrid_search.py   # Dense + Sparse + RRF
-│       ├── reranker.py        # CoreReranker
-│       └── query_processor.py # jieba 分词 + 停用词
-├── ingestion/      # 入库流程
-│   ├── pipeline.py           # 主 Pipeline
-│   ├── chunking/
-│   │   └── document_chunker.py
-│   ├── embedding/
-│   │   ├── dense_encoder.py  # 调用 libs.embedding
-│   │   └── sparse_encoder.py # jieba 分词 + Counter
-│   ├── transform/
-│   │   ├── base_transform.py
-│   │   ├── chunk_refiner.py
-│   │   ├── metadata_enricher.py
-│   │   └── image_captioner.py
-│   └── storage/
-│       ├── bm25_indexer.py   # JSON 倒排索引
-│       └── vector_upserter.py
-├── libs/           # 可插拔工具层
-│   ├── embedding/
-│   │   ├── base_embedding.py
-│   │   ├── embedding_factory.py  # 注册 openai/azure/ollama
-│   │   └── openai_embedding.py
-│   ├── reranker/
-│   │   ├── base_reranker.py
-│   │   ├── reranker_factory.py
-│   │   └── cross_encoder_reranker.py  # BGE-Reranker
-│   └── splitter/
-└── mcp_server/     # MCP 协议服务
-```
-
-### 1.3 现有代码模式
-
-**Factory Pattern**：
-- `EmbeddingFactory.create(settings)` → 根据 `settings.embedding.provider` 实例化
-- `RerankerFactory.create(settings)` → 根据 `settings.rerank.provider` 实例化
-- 新 Provider 通过 `register_provider()` 注册
-
-**Transform Pipeline**：
-- 所有 Transform 继承 `BaseTransform`
-- 实现 `transform(chunks, trace) -> chunks`
-- Pipeline 按顺序调用：ChunkRefiner → MetadataEnricher → ImageCaptioner
-
-**配置驱动**：
-- 所有配置在 `config/settings.yaml`
-- 通过 `Settings` dataclass 加载
-- 敏感信息从 `.env` 读取
-
----
-
-## 2. 原始需求
-
-基于 `docs/RAG优化/整改方案：离线解析与知识库构建优化.md` 中的优化项：
-
-| # | 优化项 | 描述 | 优先级 |
-|---|--------|------|--------|
-| **#13** | **BGE-M3 混合检索** | 用 FlagEmbedding 替换手写 jieba+BM25，一次推理同时输出 Dense + Learned Sparse | P1 ⭐ |
-| **#14** | **Contextual Retrieval** | chunk 嵌入前注入文档上下文，解决独立 chunk 语义漂移 | P1 |
-| #6 | 层级标签 heading_path | 在 chunk 中维护章节路径 | P1 |
-| #7 | content_type + ingested_at | 增加内容类型和入库时间元数据 | P1 |
-| #11 | Query Rewriting / HyDE | 查询改写和假想文档扩展 | P1 |
-
-**本次任务范围**：聚焦 **#13 BGE-M3** 和 **#14 Contextual Retrieval**，其他作为后续迭代。
-
----
-
-## 3. 边界确认
-
-### 3.1 任务范围（In Scope）
-
-1. **BGE-M3 Embedding Provider**
-   - 新建 `src/libs/embedding/bge_m3_embedding.py`
-   - 实现 `BaseEmbedding` 接口
-   - 同时返回 dense_vector 和 sparse_weights
-   - 注册到 `EmbeddingFactory`
-
-2. **Sparse Encoder 适配**
-   - 修改 `src/ingestion/embedding/sparse_encoder.py`
-   - 支持从 BGE-M3 获取 learned sparse（而非 jieba 分词）
-
-3. **Contextual Retrieval Transform**
-   - 新建 `src/ingestion/transform/context_enricher.py`
-   - 实现规则式上下文注入（先不用 LLM）
-   - 在 chunk 嵌入前添加 `[文档: xxx] [章节: xxx]` 前缀
-
-4. **Pipeline 集成**
-   - 修改 `src/ingestion/pipeline.py` 添加 ContextEnricher
-   - 修改 `src/ingestion/embedding/dense_encoder.py` 使用 context_prefix
-
-5. **配置更新**
-   - `config/settings.yaml` 添加 `embedding.provider: "bge-m3"` 选项
-   - 添加 `ingestion.context_enricher` 配置
-
-6. **单元测试**
-   - `tests/unit/test_bge_m3_embedding.py`
-   - `tests/unit/test_context_enricher.py`
-
-### 3.2 任务范围外（Out of Scope）
-
-- #6 heading_path（依赖 StructureSplitter 改动）
-- #7 content_type/ingested_at（简单元数据，可后续添加）
-- #11 Query Rewriting / HyDE（查询端优化，独立任务）
-- #15 docling PDF 解析升级（可选，独立任务）
-- LLM 版 Contextual Retrieval（先上规则式）
-
----
-
-## 4. 需求理解
-
-### 4.1 BGE-M3 技术理解
-
-**FlagEmbedding 库**：
-```python
-from FlagEmbedding import BGEM3FlagModel
-
-model = BGEM3FlagModel("BAAI/bge-m3", use_fp16=True)
-output = model.encode(texts, return_dense=True, return_sparse=True)
-
-# output["dense_vecs"]       → List[np.ndarray]  (1024 维)
-# output["lexical_weights"]  → List[Dict[int, float]]  (token_id → weight)
-```
-
-**与现有架构的集成点**：
-- `BaseEmbedding.embed()` 只返回 `List[List[float]]`（dense）
-- 需要扩展接口或新增方法返回 sparse
-- `SparseEncoder` 当前依赖 jieba，需要适配 BGE-M3 输出
-
-### 4.2 Contextual Retrieval 技术理解
-
-**规则式方案**：
-```python
-def _inject_context(chunk: Chunk, doc: Document) -> str:
-    title = doc.metadata.get("title", "")
-    source = Path(doc.metadata.get("source_path", "")).stem
-    prefix = f"[文档: {source or title}] "
-    return prefix + chunk.text
-```
-
-**集成点**：
-- 在 `DenseEncoder.encode()` 之前调用
-- 前缀只参与 embedding 计算，不存储到 chunk.text
-- 通过 `chunk.metadata["context_prefix"]` 传递
-
----
-
-## 5. 疑问澄清
-
-### Q1: BGE-M3 的 sparse 输出格式如何与现有 BM25Indexer 兼容？
-
-**分析**：
-- BGE-M3 输出 `{token_id: weight}`，token_id 是模型词表 ID
-- 现有 BM25Indexer 期望 `{term: count}`，term 是中文词
-
-**决策**：
-- **方案 A**：保留现有 BM25Indexer，BGE-M3 sparse 作为独立检索通道
-- **方案 B**：用 BGE-M3 sparse 完全替换 BM25，需要新的 sparse 存储和检索逻辑
-
-**推荐**：方案 A（渐进式），先并行运行，验证效果后再决定是否替换。
-
-### Q2: BGE-M3 模型下载和存储位置？
-
-**决策**：
-- 使用 HuggingFace 镜像 `hf-mirror.com`（与 BGE-Reranker 一致）
-- 模型缓存到 `~/.cache/huggingface/`（默认）
-- 首次加载约 2GB 下载
-
-### Q3: Contextual Retrieval 的前缀是否影响 chunk 存储？
-
-**决策**：
-- 前缀**只用于 embedding 计算**，不修改 `chunk.text`
-- 通过 `chunk.metadata["embedding_text"]` 或参数传递
-- 检索展示时仍显示原始 chunk.text
-
-### Q4: BGE-M3 是否支持 CPU 推理？
-
-**分析**：
-- 支持，但较慢（单条约 0.5-1s）
-- GPU 推荐（批量 100 条约 2-3s）
-- 可配置 `use_fp16=False` 降低显存
-
-**决策**：
-- 默认 `use_fp16=True`（有 GPU 时自动使用）
-- 添加配置项 `embedding.bge_m3.device: "auto"` 支持手动指定
-
----
-
-## 6. 技术约束
-
-1. **依赖管理**：需在 `pyproject.toml` 添加 `FlagEmbedding` 依赖
-2. **向后兼容**：现有 `openai` provider 必须继续工作
-3. **配置驱动**：通过 `settings.yaml` 切换 provider，无需改代码
-4. **测试覆盖**：新代码必须有单元测试
-5. **代码风格**：遵循现有 ruff/mypy 配置
-
----
-
-## 7. 待确认问题
-
-> **需要用户确认后继续**
-
-### 🔴 关键决策点
-
-1. **BGE-M3 sparse 与现有 BM25 的关系**
-   - [ ] 方案 A：并行运行，BGE-M3 sparse 作为独立检索通道（推荐）
-   - [ ] 方案 B：完全替换现有 BM25
-
-2. **Contextual Retrieval 实现方式**
-   - [ ] 规则式：`[文档: xxx]` 前缀（零成本，先上线）
-   - [ ] LLM 式：用 LLM 生成上下文描述（后续迭代）
-
-3. **BGE-M3 是否作为默认 provider**
-   - [ ] 是：新项目默认使用 BGE-M3
-   - [ ] 否：保持 OpenAI 为默认，BGE-M3 作为可选
-
----
-
-**请确认以上决策点，我将继续生成 CONSENSUS 文档。**
+## 验收标准
+1. 多层级分块能够正确关联 `parent_id`。
+2. 检索到的 Context 能够成功切换/扩张为父文档内容。
+3. 知识图谱能够存储并在检索时返回相关的实体关系链。

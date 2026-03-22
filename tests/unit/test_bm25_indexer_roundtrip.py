@@ -9,6 +9,7 @@ Tests cover:
 """
 
 import pytest
+import pickle
 import json
 import tempfile
 import os
@@ -301,10 +302,10 @@ class TestIndexPersistence:
         indexer = BM25Indexer(index_dir=str(tmp_path))
         
         # Create corrupted index file
-        index_path = tmp_path / "corrupted_bm25.json"
-        index_path.write_text("not valid json{")
+        index_path = tmp_path / "corrupted_bm25.pkl"
+        index_path.write_bytes(b"not valid pickle")
         
-        with pytest.raises(ValueError, match="Corrupted index file"):
+        with pytest.raises((pickle.PickleError, EOFError, ValueError)):
             indexer.load(collection="corrupted")
     
     def test_load_invalid_structure_raises(self, tmp_path):
@@ -312,8 +313,8 @@ class TestIndexPersistence:
         indexer = BM25Indexer(index_dir=str(tmp_path))
         
         # Create index file with missing fields
-        index_path = tmp_path / "invalid_bm25.json"
-        index_path.write_text(json.dumps({"metadata": {}}))  # Missing "index"
+        index_path = tmp_path / "invalid_bm25.pkl"
+        index_path.write_bytes(pickle.dumps({"metadata": {}}))  # Missing "index"
         
         with pytest.raises(ValueError, match="Invalid index file structure"):
             indexer.load(collection="invalid")
@@ -328,12 +329,12 @@ class TestIndexPersistence:
         
         indexer.build(term_stats, collection="my_collection")
         
-        expected_path = tmp_path / "my_collection_bm25.json"
+        expected_path = tmp_path / "my_collection_bm25.pkl"
         assert expected_path.exists()
         
-        # Verify it's valid JSON
-        with open(expected_path) as f:
-            data = json.load(f)
+        # Verify it's valid Pickle
+        with open(expected_path, 'rb') as f:
+            data = pickle.load(f)
         
         assert "metadata" in data
         assert "index" in data

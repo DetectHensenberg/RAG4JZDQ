@@ -45,6 +45,7 @@ def get_hybrid_search(collection: str = "default") -> Any:
     from src.core.query_engine.query_processor import QueryProcessor
     from src.core.query_engine.fusion import RRFFusion
     from src.core.query_engine.hybrid_search import HybridSearch
+    from src.core.query_engine.strategy_router import StrategyRouter
     from src.core.query_engine.reranker import CoreReranker
 
     embedding = EmbeddingFactory.create(settings)
@@ -75,6 +76,38 @@ def get_hybrid_search(collection: str = "default") -> Any:
         fusion=fusion,
         reranker=reranker,
     )
+
+    parent_mode = getattr(settings.retrieval, "parent_retrieval_mode", "never")
+    graph_mode = getattr(settings.retrieval, "graph_rag_mode", "never")
+
+    if parent_mode != "never":
+        try:
+            from src.ingestion.storage.parent_store import ParentStore
+
+            _hybrid_search.parent_store = ParentStore(
+                db_path=str(resolve_path(f"data/db/parent_store/{collection}.db"))
+            )
+        except Exception as e:
+            logger.warning(f"ParentStore init failed: {e}")
+
+    if graph_mode != "never":
+        try:
+            from src.ingestion.storage.graph_store import GraphStore
+
+            _hybrid_search.graph_store = GraphStore(
+                db_path=str(resolve_path(f"data/db/graph_store/{collection}.db"))
+            )
+        except Exception as e:
+            logger.warning(f"GraphStore init failed: {e}")
+
+    router_llm = None
+    if parent_mode == "auto" or graph_mode == "auto":
+        try:
+            router_llm = get_llm()
+        except Exception as e:
+            logger.warning(f"StrategyRouter LLM init failed, using fallback routing: {e}")
+
+    _hybrid_search.strategy_router = StrategyRouter(settings=settings, llm=router_llm)
     _hybrid_collection = collection
     logger.info(f"HybridSearch initialized for collection '{collection}'")
     return _hybrid_search

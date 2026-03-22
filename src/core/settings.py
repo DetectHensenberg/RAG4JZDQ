@@ -38,6 +38,9 @@ class SettingsError(ValueError):
     """Raised when settings validation fails."""
 
 
+VALID_RETRIEVAL_MODES = {"auto", "always", "never"}
+
+
 def _require_mapping(data: Dict[str, Any], key: str, path: str) -> Dict[str, Any]:
     value = data.get(key)
     if value is None:
@@ -88,6 +91,33 @@ def _require_list(data: Dict[str, Any], key: str, path: str) -> List[Any]:
     return value
 
 
+def _parse_retrieval_mode(
+    retrieval: Dict[str, Any],
+    key: str,
+    legacy_key: str,
+) -> str:
+    """Parse tri-state retrieval mode with legacy bool compatibility."""
+    if key in retrieval:
+        value = retrieval[key]
+    elif legacy_key in retrieval:
+        value = retrieval[legacy_key]
+    else:
+        return "never"
+
+    if isinstance(value, bool):
+        return "always" if value else "never"
+
+    if isinstance(value, str):
+        mode = value.strip().lower()
+        if mode in VALID_RETRIEVAL_MODES:
+            return mode
+
+    raise SettingsError(
+        f"Expected {key} to be one of {sorted(VALID_RETRIEVAL_MODES)} "
+        f"or a legacy boolean {legacy_key}"
+    )
+
+
 def _parse_embedding_settings(embedding: Dict[str, Any]) -> "EmbeddingSettings":
     """Parse embedding settings including optional BGE-M3 config."""
     bge_m3_config = None
@@ -123,6 +153,27 @@ def _parse_ingestion_settings(ingestion: Dict[str, Any]) -> "IngestionSettings":
                 enabled=ce_data.get("enabled", True),
             )
     
+    parent_retrieval_config = None
+    if "parent_retrieval" in ingestion:
+        pr_data = ingestion["parent_retrieval"]
+        if isinstance(pr_data, dict):
+            parent_retrieval_config = ParentRetrievalConfig(
+                enabled=pr_data.get("enabled", False),
+                parent_chunk_size=pr_data.get("parent_chunk_size", 2000),
+                child_chunk_size=pr_data.get("child_chunk_size", 400),
+                child_chunk_overlap=pr_data.get("child_chunk_overlap", 50),
+            )
+    
+    graph_rag_config = None
+    if "graph_rag" in ingestion:
+        gr_data = ingestion["graph_rag"]
+        if isinstance(gr_data, dict):
+            graph_rag_config = GraphRAGConfig(
+                enabled=gr_data.get("enabled", False),
+                extraction_model=gr_data.get("extraction_model"),
+                max_hops=gr_data.get("max_hops", 1),
+            )
+    
     return IngestionSettings(
         chunk_size=_require_int(ingestion, "chunk_size", "ingestion"),
         chunk_overlap=_require_int(ingestion, "chunk_overlap", "ingestion"),
@@ -132,6 +183,8 @@ def _parse_ingestion_settings(ingestion: Dict[str, Any]) -> "IngestionSettings":
         chunk_refiner=ingestion.get("chunk_refiner"),
         metadata_enricher=ingestion.get("metadata_enricher"),
         context_enricher=context_enricher_config,
+        parent_retrieval=parent_retrieval_config,
+        graph_rag=graph_rag_config,
     )
 
 
@@ -189,6 +242,18 @@ class RetrievalSettings:
     rrf_k: int
     query_rewrite: bool = False  # LLM query rewriting
     hyde_enabled: bool = False   # HyDE (Hypothetical Document Embedding)
+    parent_retrieval_mode: str = "never"
+    graph_rag_mode: str = "never"
+
+    @property
+    def parent_retrieval_enabled(self) -> bool:
+        """Backward-compatible legacy flag view."""
+        return self.parent_retrieval_mode == "always"
+
+    @property
+    def graph_rag_enabled(self) -> bool:
+        """Backward-compatible legacy flag view."""
+        return self.graph_rag_mode == "always"
 
 
 @dataclass(frozen=True)
@@ -234,6 +299,23 @@ class ContextEnricherConfig:
 
 
 @dataclass(frozen=True)
+class ParentRetrievalConfig:
+    """Parent Document Retrieval configuration."""
+    enabled: bool = False
+    parent_chunk_size: int = 2000
+    child_chunk_size: int = 400
+    child_chunk_overlap: int = 50
+
+
+@dataclass(frozen=True)
+class GraphRAGConfig:
+    """GraphRAG configuration."""
+    enabled: bool = False
+    extraction_model: Optional[str] = None
+    max_hops: int = 1
+
+
+@dataclass(frozen=True)
 class IngestionSettings:
     chunk_size: int
     chunk_overlap: int
@@ -243,6 +325,8 @@ class IngestionSettings:
     chunk_refiner: Optional[Dict[str, Any]] = None  # 动态配置
     metadata_enricher: Optional[Dict[str, Any]] = None  # 动态配置
     context_enricher: Optional[ContextEnricherConfig] = None  # 上下文注入配置
+    parent_retrieval: Optional[ParentRetrievalConfig] = None
+    graph_rag: Optional[GraphRAGConfig] = None
 
 
 @dataclass(frozen=True)
@@ -273,15 +357,7 @@ class Settings:
         ingestion_settings = None
         if "ingestion" in data:
             ingestion = _require_mapping(data, "ingestion", "settings")
-            ingestion_settings = IngestionSettings(
-                chunk_size=_require_int(ingestion, "chunk_size", "ingestion"),
-                chunk_overlap=_require_int(ingestion, "chunk_overlap", "ingestion"),
-                splitter=_require_str(ingestion, "splitter", "ingestion"),
-                batch_size=_require_int(ingestion, "batch_size", "ingestion"),
-                pdf_parser=ingestion.get("pdf_parser", "markitdown"),
-                chunk_refiner=ingestion.get("chunk_refiner"),  # 可选配置
-                metadata_enricher=ingestion.get("metadata_enricher"),  # 可选配置
-            )
+            ingestion_settings = _parse_ingestion_settings(ingestion)
 
         vision_llm_settings = None
         if "vision_llm" in data:
@@ -323,6 +399,16 @@ class Settings:
                 rrf_k=_require_int(retrieval, "rrf_k", "retrieval"),
                 query_rewrite=retrieval.get("query_rewrite", False),
                 hyde_enabled=retrieval.get("hyde_enabled", False),
+                parent_retrieval_mode=_parse_retrieval_mode(
+                    retrieval,
+                    "parent_retrieval_mode",
+                    "parent_retrieval_enabled",
+                ),
+                graph_rag_mode=_parse_retrieval_mode(
+                    retrieval,
+                    "graph_rag_mode",
+                    "graph_rag_enabled",
+                ),
             ),
             rerank=RerankSettings(
                 enabled=_require_bool(rerank, "enabled", "rerank"),

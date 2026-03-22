@@ -20,7 +20,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class SparseRetriever:
+from src.core.query_engine.base_sparse_retriever import BaseSparseRetriever
+
+class SparseRetriever(BaseSparseRetriever):
     """Sparse retriever using BM25 keyword-based search.
     
     This class performs keyword-based retrieval by:

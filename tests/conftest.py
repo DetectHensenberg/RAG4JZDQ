@@ -48,3 +48,12 @@ def config_dir(project_root: Path) -> Path:
         Path to the config directory.
     """
     return project_root / "config"
+
+
+@pytest.fixture(autouse=True)
+def clear_retrieval_cache() -> None:
+    """Ensure global retrieval cache does not leak state across tests."""
+    from src.core.query_engine.retrieval_cache import get_retrieval_cache
+
+    cache = get_retrieval_cache()
+    cache.clear()

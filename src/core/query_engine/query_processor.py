@@ -142,11 +142,55 @@ class QueryProcessor:
         # Filter stopwords and apply constraints
         keywords = self._filter_keywords(tokens)
         
+        # Detect search intent weights (Dense vs Sparse)
+        intent_weights = self._detect_intent_weights(query_without_filters)
+        
         return ProcessedQuery(
             original_query=query,
             keywords=keywords,
-            filters=filters
+            filters=filters,
+            intent_weights=intent_weights
         )
+    
+    def _detect_intent_weights(self, query: str) -> List[float]:
+        """Detect search intent weights based on query patterns.
+        
+        Logic:
+        - Sparse (BM25) heavy: Version numbers, serials, code snippets, path-like strings.
+        - Dense (Semantic) heavy: Questions, short greetings, abstract concepts.
+        
+        Returns:
+            List[float]: Weights [dense_weight, sparse_weight]. Default [1.0, 1.0].
+        """
+        # Patterns for Sparse (BM25) intent
+        sparse_patterns = [
+            r'v\d+\.\d+(\.\d+)?',            # Version numbers: v1.0, v3.11.5
+            r'[a-zA-Z0-9_\-]+\.[a-z]{2,4}',     # File names: config.json, main.py
+            r'[A-Z0-9]{5,}\-[A-Z0-9]{5,}',      # Serial numbers: ABC-12345
+            r'0x[0-9a-fA-F]+',               # Hex numbers: 0xFF
+            r'\b\d{3,}\b',                   # Long numbers (standalone)
+        ]
+        
+        # Patterns for Dense (Semantic) intent
+        dense_patterns = [
+            r'什么是|如何|怎么|为什么|介绍一下|介绍下|总结|归纳|概括', # Chinese questions/keywords
+            r'\b(who|what|how|why|summary|explain|tell|describe)\b', # English questions
+            r'你好|您好|哈喽|hello|hi',                                 # Greetings
+        ]
+        
+        is_sparse = any(re.search(p, query, re.IGNORECASE) for p in sparse_patterns)
+        is_dense = any(re.search(p, query, re.IGNORECASE) for p in dense_patterns)
+        
+        # Conflict resolution and weight assignment
+        if is_sparse and not is_dense:
+            # Shift towards BM25 (e.g. Version query)
+            return [0.3, 1.7]
+        elif is_dense and not is_sparse:
+            # Shift towards Embedding (e.g. Question query)
+            return [1.7, 0.3]
+        
+        # Neutral or conflicting - use balanced weights
+        return [1.0, 1.0]
     
     def _normalize(self, query: str) -> str:
         """Normalize query string.

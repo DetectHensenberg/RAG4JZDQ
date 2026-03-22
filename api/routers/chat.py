@@ -23,51 +23,7 @@ from src.core.response.multimodal_assembler import MultimodalAssembler
 from src.ingestion.storage.image_storage import ImageStorage
 
 
-async def _is_background_image(img_id: str, img_path: str, storage: ImageStorage, min_edge: float = 8.0, min_dim: int = 150) -> bool:
-    """Return True if the image looks like a PPT background / decoration.
-
-    Uses gradient-based edge strength. Results are persisted in SQLite to avoid
-    repeated computation across sessions.
-    """
-    try:
-        # 1. Check metadata in DB first
-        meta = await storage.aget_image_metadata(img_id)
-        if meta and meta.get("is_background") is not None:
-            # logger.debug(f"[perf] Background cache hit (DB) for {img_id}: {meta['is_background']}")
-            return bool(meta["is_background"])
-
-        # 2. Compute if not in DB
-        from PIL import Image
-        import numpy as np
-
-        img = Image.open(img_path).convert("RGB")
-        w, h = img.size
-        # Small icons are often decorative
-        if w < min_dim or h < min_dim:
-            is_bg = 1
-        else:
-            # Down-sample large images for speed
-            if w > 800 or h > 800:
-                img.thumbnail((800, 800))
-
-            arr = np.array(img, dtype=np.float32)
-            gray = arr.mean(axis=2)
-            gx = np.diff(gray, axis=1)
-            gy = np.diff(gray, axis=0)
-            edge_strength = (np.abs(gx).mean() + np.abs(gy).mean()) / 2.0
-            is_bg = 1 if edge_strength < min_edge else 0
-        
-        # 3. Persist result
-        await storage.aupdate_image_metadata(img_id, is_background=is_bg)
-        return bool(is_bg)
-    except Exception as e:
-        logger.warning(f"Background analysis failed for {img_id}: {e}")
-        return False  # if analysis fails, keep the image
-from src.libs.llm.base_llm import Message
-
-logger = logging.getLogger(__name__)
-router = APIRouter()
-
+# Constants
 # Image relevance threshold (0.0 - 1.0)
 # Images from retrieved chunks are inherently relevant; keep threshold low
 IMAGE_RELEVANCE_THRESHOLD = 0.10
@@ -185,7 +141,7 @@ async def _strip_background_images(text: str, collection: str = "default") -> st
             img_path = await image_storage.aget_image_path(img_id)
             if not img_path:
                 valid_ids[img_id] = True # Keep if not found, it might be hallucinated or external
-            elif await _is_background_image(img_id, img_path, image_storage):
+            elif await image_storage.adetect_background(img_id, img_path):
                 valid_ids[img_id] = False
             else:
                 valid_ids[img_id] = True
@@ -349,7 +305,7 @@ async def chat_stream(req: ChatRequest):
                             if Path(path).stat().st_size < MIN_IMAGE_SIZE: continue
                         except OSError: continue
                         
-                        if await _is_background_image(img_ref.image_id, path, image_storage):
+                        if await image_storage.adetect_background(img_ref.image_id, path):
                             continue
                             
                         rel = _calculate_image_relevance(
@@ -423,7 +379,7 @@ async def chat_stream(req: ChatRequest):
                     img_path = await _img_storage.aget_image_path(img_id)
                     if not img_path:
                         valid_ids[img_id] = False
-                    elif await _is_background_image(img_id, img_path, _img_storage):
+                    elif await _img_storage.adetect_background(img_id, img_path):
                         valid_ids[img_id] = False
                     else:
                         valid_ids[img_id] = True
@@ -440,8 +396,6 @@ async def chat_stream(req: ChatRequest):
         except Exception: pass
         await _asave_history(question, full_answer, references)
         logger.info(f"[perf] total: {time.perf_counter()-t0:.2f}s")
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     return StreamingResponse(event_stream(), media_type="text/event-stream")
 

@@ -8,13 +8,116 @@ import tempfile
 from pathlib import Path
 from typing import Optional
 
+import json
 from fastapi import APIRouter, File, UploadFile, Form
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
+import asyncio
 
 from api.models import DocumentDeleteRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+
+@router.post("/upload-stream")
+async def upload_and_ingest_stream(
+    file: UploadFile = File(...),
+    collection: str = Form("default"),
+    product_vendor: str = Form(""),
+    product_model: str = Form(""),
+    product_category: str = Form(""),
+    product_device: str = Form(""),
+):
+    """Upload a file and stream ingestion progress via SSE."""
+    async def progress_stream():
+        tmp_path = None
+        try:
+            # Step 1: Save file
+            yield f"data: {json.dumps({'stage': 'uploading', 'percent': 5.0})}\n\n"
+            suffix = Path(file.filename or "upload").suffix
+            with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp:
+                content = await file.read()
+                tmp.write(content)
+                tmp_path = tmp.name
+
+            # Step 2: Prepare metadata
+            from src.ingestion.vendor_inference import infer_from_filename
+            extra_metadata: dict[str, str] = {}
+            if product_vendor: extra_metadata["product_vendor"] = product_vendor
+            if product_model: extra_metadata["product_model"] = product_model
+            if product_category: extra_metadata["product_category"] = product_category
+            if product_device: extra_metadata["product_device"] = product_device
+            
+            filename = file.filename or "upload"
+            extra_metadata["source_filename"] = filename
+            extra_metadata["source_directory"] = str(Path(filename).parent)
+            
+            if not extra_metadata.get("product_vendor") or not extra_metadata.get("product_model"):
+                inf_vendor, inf_model = infer_from_filename(filename)
+                if inf_vendor and not extra_metadata.get("product_vendor"):
+                    extra_metadata["product_vendor"] = inf_vendor
+                if inf_model and not extra_metadata.get("product_model"):
+                    extra_metadata["product_model"] = inf_model
+
+            # Step 3: Run pipeline with progress callback
+            from src.ingestion.pipeline import run_pipeline
+
+            async def on_progress(stage: str, percent: float):
+                # Map internal pipeline percentages to a 10-95% range
+                # (Leave 0-5 for upload and 95-100 for final success)
+                mapped_percent = 10.0 + (percent * 0.85)
+                yield_data = json.dumps({"stage": stage, "percent": round(mapped_percent, 1)})
+                # Note: We can't directly 'yield' from here as it's a callback,
+                # but we can use a queue if we wanted to be more robust.
+                # However, for simplicity in SSE, we'll just push directly if the context allows.
+                # Actually, in FastAPI/Starlette, we need to handle this carefully.
+                
+            # To fix the yield issue, we use an asyncio.Queue
+            queue = asyncio.Queue()
+            async def _on_progress_q(stage: str, percent: float):
+                await queue.put({"stage": stage, "percent": percent})
+
+            # Run pipeline in a task
+            async def _run():
+                try:
+                    res = await run_pipeline(
+                        file_path=tmp_path,
+                        collection=collection,
+                        on_progress_async=_on_progress_q,
+                        original_filename=file.filename,
+                        extra_metadata=extra_metadata if extra_metadata else None,
+                    )
+                    await queue.put({"done": True, "result": res})
+                except Exception as e_run:
+                    await queue.put({"error": str(e_run)})
+
+            asyncio.create_task(_run())
+
+            while True:
+                item = await queue.get()
+                if "done" in item:
+                    res = item["result"]
+                    if res.success:
+                        yield f"data: {json.dumps({'stage': 'completed', 'percent': 100.0, 'data': {'chunks': res.chunk_count, 'images': res.image_count}})}\n\n"
+                    else:
+                        yield f"data: {json.dumps({'stage': 'failed', 'error': res.error})}\n\n"
+                    break
+                elif "error" in item:
+                    yield f"data: {json.dumps({'stage': 'failed', 'error': item['error']})}\n\n"
+                    break
+                else:
+                    # Map 0-100 from pipeline to 10-95 for UI
+                    p = 10.0 + (item["percent"] * 0.85)
+                    yield f"data: {json.dumps({'stage': item['stage'], 'percent': round(p, 1)})}\n\n"
+
+        except Exception as e:
+            logger.exception("Stream ingestion failed")
+            yield f"data: {json.dumps({'stage': 'error', 'message': str(e)})}\n\n"
+        finally:
+            if tmp_path: Path(tmp_path).unlink(missing_ok=True)
+
+    return StreamingResponse(progress_stream(), media_type="text/event-stream")
 
 
 @router.post("/upload")

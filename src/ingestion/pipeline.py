@@ -16,9 +16,10 @@ Design Principles:
 - Idempotent: SHA256-based skip for unchanged files
 """
 
-from pathlib import Path
-from typing import Callable, List, Optional, Dict, Any
+import asyncio
 import time
+from pathlib import Path
+from typing import Callable, List, Optional, Dict, Any, Coroutine
 
 from src.core.settings import Settings, load_settings, resolve_path
 from src.core.types import Document, Chunk
@@ -33,16 +34,20 @@ from src.libs.vector_store.vector_store_factory import VectorStoreFactory
 
 # Ingestion layer imports
 from src.ingestion.chunking.document_chunker import DocumentChunker
+from src.ingestion.chunking.hierarchical_chunker import HierarchicalChunker
 from src.ingestion.transform.chunk_refiner import ChunkRefiner
 from src.ingestion.transform.metadata_enricher import MetadataEnricher
 from src.ingestion.transform.image_captioner import ImageCaptioner
 from src.ingestion.transform.context_enricher import ContextEnricher
+from src.ingestion.transform.graph_extractor import GraphExtractor
 from src.ingestion.embedding.dense_encoder import DenseEncoder
 from src.ingestion.embedding.sparse_encoder import SparseEncoder
 from src.ingestion.embedding.batch_processor import BatchProcessor
 from src.ingestion.storage.bm25_indexer import BM25Indexer
 from src.ingestion.storage.vector_upserter import VectorUpserter
 from src.ingestion.storage.image_storage import ImageStorage
+from src.ingestion.storage.parent_store import ParentStore
+from src.ingestion.storage.graph_store import GraphStore
 
 logger = get_logger(__name__)
 
@@ -197,9 +202,30 @@ class IngestionPipeline:
         
         self.image_storage = ImageStorage(
             db_path=str(resolve_path("data/db/image_index.db")),
-            images_root=str(resolve_path("data/images"))
+            image_dir=str(resolve_path(f"data/images/{collection}")),
         )
-        logger.info("  ✓ ImageStorage initialized")
+        logger.info(f"  ✓ ImageStorage initialized")
+
+        # Optional Stage: Parent Retrieval
+        self.parent_store: Optional[ParentStore] = None
+        self.hierarchical_chunker: Optional[HierarchicalChunker] = None
+        ingestion_settings = settings.ingestion
+        if ingestion_settings and ingestion_settings.parent_retrieval and ingestion_settings.parent_retrieval.enabled:
+            self.hierarchical_chunker = HierarchicalChunker(settings)
+            self.parent_store = ParentStore(
+                db_path=str(resolve_path(f"data/db/parent_store/{collection}.db"))
+            )
+            logger.info("  ✓ HierarchicalChunker + ParentStore initialized (Parent Retrieval enabled)")
+
+        # Optional Stage: GraphRAG
+        self.graph_store: Optional[GraphStore] = None
+        self.graph_extractor: Optional[GraphExtractor] = None
+        if ingestion_settings and ingestion_settings.graph_rag and ingestion_settings.graph_rag.enabled:
+            self.graph_store = GraphStore(
+                db_path=str(resolve_path(f"data/db/graph_store/{collection}.db"))
+            )
+            self.graph_extractor = GraphExtractor(settings, self.graph_store)
+            logger.info("  ✓ GraphStore + GraphExtractor initialized (GraphRAG enabled)")
         
         logger.info("Pipeline initialization complete!")
     
@@ -273,37 +299,37 @@ class IngestionPipeline:
             details.append(detail)
         return details
     
-    def run(
+    async def run(
         self,
         file_path: str,
         trace: Optional[TraceContext] = None,
         on_progress: Optional[Callable[[str, int, int], None]] = None,
+        on_progress_async: Optional[Callable[[str, float], Coroutine[Any, Any, None]]] = None,
         original_filename: Optional[str] = None,
         extra_metadata: Optional[Dict[str, str]] = None,
     ) -> PipelineResult:
-        """Execute the full ingestion pipeline on a file.
+        """Execute the full ingestion pipeline on a file (Async).
         
         Args:
-            file_path: Path to the file to process (e.g., PDF)
-            trace: Optional trace context for observability
-            on_progress: Optional callback ``(stage_name, current, total)``
-                invoked when each pipeline stage completes.  *current* is
-                the 1-based index of the completed stage; *total* is the
-                number of stages (currently 6).
-            extra_metadata: Optional dict of extra metadata to inject into
-                every chunk (e.g. product_vendor, product_model).
-        
-        Returns:
-            PipelineResult with success status and statistics
+            file_path: Path to the file to process.
+            trace: Optional trace context.
+            on_progress: Legacy synchronous progress callback.
+            on_progress_async: Async progress callback providing (stage_name, percent).
+            original_filename: Original name of the file.
+            extra_metadata: Extra metadata to inject.
         """
         file_path = Path(file_path)
         display_name = original_filename or file_path.name
         stages: Dict[str, Any] = {}
         _total_stages = 6
 
-        def _notify(stage_name: str, step: int) -> None:
+        async def _notify(stage_name: str, step: int, percent: float = 0.0) -> None:
             if on_progress is not None:
                 on_progress(stage_name, step, _total_stages)
+            if on_progress_async is not None:
+                # Provide a more granular percent if step is fixed
+                # percent = (step - 1) / _total_stages + (local_progress / _total_stages)
+                await on_progress_async(stage_name, percent)
         
         logger.info(f"=" * 60)
         logger.info(f"Starting Ingestion Pipeline for: {display_name}")
@@ -315,7 +341,7 @@ class IngestionPipeline:
             # Stage 1: File Integrity Check
             # ─────────────────────────────────────────────────────────────
             logger.info("\n📋 Stage 1: File Integrity Check")
-            _notify("integrity", 1)
+            await _notify("integrity", 1)
             
             file_hash = self.integrity_checker.compute_sha256(str(file_path))
             logger.info(f"  File hash: {file_hash[:16]}...")
@@ -344,7 +370,7 @@ class IngestionPipeline:
             # Stage 2: Document Loading
             # ─────────────────────────────────────────────────────────────
             logger.info("\n📄 Stage 2: Document Loading")
-            _notify("load", 2)
+            await _notify("load", 2)
             
             _t0 = time.monotonic()
             pdf_parser = "markitdown"
@@ -388,7 +414,7 @@ class IngestionPipeline:
             # Stage 3: Chunking
             # ─────────────────────────────────────────────────────────────
             logger.info("\n✂️  Stage 3: Document Chunking")
-            _notify("split", 3)
+            await _notify("split", 3)
             
             _t0 = time.monotonic()
             chunks = self.chunker.split_document(document)
@@ -420,15 +446,16 @@ class IngestionPipeline:
             # Stage 4: Transform Pipeline
             # ─────────────────────────────────────────────────────────────
             logger.info("\n🔄 Stage 4: Transform Pipeline")
-            _notify("transform", 4)
+            await _notify("transform", 4)
             
             # 4a: Context Enrichment (zero-cost, always run first)
             _t0_transform = time.monotonic()
             chunks = self.context_enricher.transform(chunks, trace)
             context_enriched = sum(1 for c in chunks if c.metadata.get("embedding_text"))
             logger.info(f"  4a. Context Enrichment: {context_enriched}/{len(chunks)} chunks enriched")
-            
-            # 4b: Chunk Refinement
+            await _notify("transform:context", 4, 15.0)
+
+            # 4b: Parallel LLM Transforms
             _pre_refine_texts = {c.id: c.text for c in chunks}
             refined_by_llm = refined_by_rule = 0
             enriched_by_llm = enriched_by_rule = 0
@@ -436,28 +463,44 @@ class IngestionPipeline:
 
             if self.skip_llm_transform:
                 logger.info("  ⏩ Skipping LLM transforms (skip_llm_transform=True)")
-                # Still apply rule-based refinement (fast, no API calls)
                 chunks = self.chunk_refiner.transform(chunks, trace)
                 refined_by_rule = sum(1 for c in chunks if c.metadata.get("refined_by") == "rule")
                 logger.info(f"      Rule refined: {refined_by_rule}")
+                await _notify("transform:rule", 4, 30.0)
             else:
-                logger.info("  4a. Chunk Refinement...")
-                chunks = self.chunk_refiner.transform(chunks, trace)
+                logger.info("  4b. Parallel LLM Transforms (Refine + Enrich + Caption)...")
+                
+                # We wrap the synchronous transform calls in asyncio.to_thread to run them in parallel
+                # Since these are mostly IO/API bound (LLM calls), this is safe and effective.
+                async def _run_refine():
+                    nonlocal chunks
+                    return await asyncio.to_thread(self.chunk_refiner.transform, chunks, trace)
+                
+                async def _run_enrich():
+                    nonlocal chunks
+                    return await asyncio.to_thread(self.metadata_enricher.transform, chunks, trace)
+                
+                async def _run_caption():
+                    nonlocal chunks
+                    return await asyncio.to_thread(self.image_captioner.transform, chunks, trace)
+
+                # Execute Refine first as it might change the text, then Enrich and Caption in parallel
+                # because metadata enrichment often depends on the final text.
+                chunks = await _run_refine()
+                await _notify("transform:refine", 4, 25.0)
+                
+                # Enrich and Caption can run in parallel
+                await asyncio.gather(_run_enrich(), _run_caption())
+                await _notify("transform:enrich_caption", 4, 45.0)
+                
                 refined_by_llm = sum(1 for c in chunks if c.metadata.get("refined_by") == "llm")
                 refined_by_rule = sum(1 for c in chunks if c.metadata.get("refined_by") == "rule")
-                logger.info(f"      LLM refined: {refined_by_llm}, Rule refined: {refined_by_rule}")
-                
-                # 4b: Metadata Enrichment
-                logger.info("  4b. Metadata Enrichment...")
-                chunks = self.metadata_enricher.transform(chunks, trace)
                 enriched_by_llm = sum(1 for c in chunks if c.metadata.get("enriched_by") == "llm")
                 enriched_by_rule = sum(1 for c in chunks if c.metadata.get("enriched_by") == "rule")
-                logger.info(f"      LLM enriched: {enriched_by_llm}, Rule enriched: {enriched_by_rule}")
-                
-                # 4c: Image Captioning
-                logger.info("  4c. Image Captioning...")
-                chunks = self.image_captioner.transform(chunks, trace)
                 captioned = sum(1 for c in chunks if c.metadata.get("image_captions"))
+                
+                logger.info(f"      LLM refined: {refined_by_llm}, Rule refined: {refined_by_rule}")
+                logger.info(f"      LLM enriched: {enriched_by_llm}, Rule enriched: {enriched_by_rule}")
                 logger.info(f"      Chunks with captions: {captioned}")
             
             stages["transform"] = {
@@ -481,7 +524,7 @@ class IngestionPipeline:
             # Stage 5: Encoding
             # ─────────────────────────────────────────────────────────────
             logger.info("\n🔢 Stage 5: Encoding")
-            _notify("embed", 5)
+            await _notify("embed", 5)
             
             # Process through BatchProcessor
             _t0 = time.monotonic()
@@ -511,7 +554,7 @@ class IngestionPipeline:
             # Stage 6: Storage
             # ─────────────────────────────────────────────────────────────
             logger.info("\n💾 Stage 6: Storage")
-            _notify("upsert", 6)
+            await _notify("upsert", 6)
             
             # 6a: Vector Upsert
             if len(dense_vectors) == 0:
@@ -562,19 +605,47 @@ class IngestionPipeline:
             
             # 6c: Register images in image storage index
             # Note: Images are already saved by PdfLoader, we just need to index them
-            logger.info("  6c. Image Storage Index...")
+            logger.info("  6c. Image Storage Index (Background detection)...")
             images = document.metadata.get("images", [])
             for img in images:
                 img_path = Path(img["path"])
                 if img_path.exists():
+                    # Optimization 2: Persistent Background Detection during ingestion
+                    # This ensures background status is known before any queries
+                    is_bg = await self.image_storage.adetect_background(
+                        image_id=img["id"],
+                        image_path=str(img_path.resolve())
+                    )
                     self.image_storage.register_image(
                         image_id=img["id"],
                         file_path=img_path,
                         collection=self.collection,
                         doc_hash=file_hash,
-                        page_num=img.get("page", 0)
+                        page_num=img.get("page", 0),
+                        is_background=int(is_bg)
                     )
             logger.info(f"      Indexed {len(images)} images")
+
+            # 6d: Parent Chunk Storage (if Parent Retrieval enabled)
+            if self.hierarchical_chunker and self.parent_store:
+                logger.info("  6d. Parent Chunk Storage (hierarchical)...")
+                try:
+                    child_chunks, parent_chunks = self.hierarchical_chunker.split_hierarchical(document)
+                    self.parent_store.add_parents(parent_chunks)
+                    logger.info(f"      Stored {len(parent_chunks)} parent chunks, {len(child_chunks)} child chunks indexed")
+                except Exception as pr_err:
+                    logger.warning(f"      Parent Retrieval storage failed (non-fatal): {pr_err}")
+
+            # 6e: GraphRAG Entity Extraction (if enabled)
+            if self.graph_extractor and self.graph_store:
+                logger.info("  6e. GraphRAG Entity Extraction...")
+                try:
+                    e_count, r_count = self.graph_extractor.extract_and_store(
+                        chunks, doc_id=document.id, trace=trace
+                    )
+                    logger.info(f"      Extracted {e_count} entities, {r_count} relationships")
+                except Exception as gr_err:
+                    logger.warning(f"      GraphRAG extraction failed (non-fatal): {gr_err}")
             
             stages["storage"] = {
                 "vector_count": len(vector_ids),
@@ -670,19 +741,21 @@ class IngestionPipeline:
         self.image_storage.close()
 
 
-def run_pipeline(
+async def run_pipeline(
     file_path: str,
     settings_path: Optional[str] = None,
     collection: str = "default",
-    force: bool = False
+    force: bool = False,
+    on_progress_async: Optional[Callable[[str, float], Coroutine[Any, Any, None]]] = None,
 ) -> PipelineResult:
-    """Convenience function to run the pipeline.
+    """Convenience function to run the pipeline (Async).
     
     Args:
         file_path: Path to file to process
-        settings_path: Path to settings.yaml (default: <repo>/config/settings.yaml)
+        settings_path: Path to settings.yaml
         collection: Collection name
         force: Force reprocessing
+        on_progress_async: Async progress callback
     
     Returns:
         PipelineResult with execution details
@@ -691,6 +764,6 @@ def run_pipeline(
     pipeline = IngestionPipeline(settings, collection=collection, force=force)
     
     try:
-        return pipeline.run(file_path)
+        return await pipeline.run(file_path, on_progress_async=on_progress_async)
     finally:
         pipeline.close()

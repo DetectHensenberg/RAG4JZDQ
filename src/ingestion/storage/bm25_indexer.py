@@ -13,7 +13,7 @@ Design Principles:
 - Deterministic: Same corpus produces same IDF scores
 """
 
-import json
+import pickle
 import math
 import os
 from pathlib import Path
@@ -207,8 +207,8 @@ class BM25Indexer:
             return False
         
         try:
-            with open(index_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
+            with open(index_path, 'rb') as f:
+                data = pickle.load(f)
             
             # Validate structure
             if "metadata" not in data or "index" not in data:
@@ -219,7 +219,7 @@ class BM25Indexer:
             
             return True
             
-        except json.JSONDecodeError as e:
+        except (pickle.UnpicklingError, EOFError, ValueError) as e:
             raise ValueError(f"Corrupted index file at {index_path}: {e}")
     
     def query(
@@ -565,7 +565,7 @@ class BM25Indexer:
         Returns:
             Path to index file
         """
-        return self.index_dir / f"{collection}_bm25.json"
+        return self.index_dir / f"{collection}_bm25.pkl"
     
     def _save(self, collection: str) -> None:
         """Save index to disk.
@@ -587,13 +587,13 @@ class BM25Indexer:
         # Write atomically (write to temp file, then rename)
         temp_path = index_path.with_suffix('.tmp')
         try:
-            with open(temp_path, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, separators=(',', ':'))
+            with open(temp_path, 'wb') as f:
+                pickle.dump(data, f)
             
             # Atomic rename
             temp_path.replace(index_path)
             
-        except (IOError, OSError, json.JSONDecodeError, TypeError) as e:
+        except (IOError, OSError, pickle.PickleError, TypeError) as e:
             # Clean up temp file if write failed
             if temp_path.exists():
                 temp_path.unlink()

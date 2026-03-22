@@ -143,7 +143,8 @@ class ImageStorage:
         collection: Optional[str] = None,
         doc_hash: Optional[str] = None,
         page_num: Optional[int] = None,
-        extension: str = "png"
+        extension: str = "png",
+        **kwargs
     ) -> str:
         """Save image to filesystem and register in database.
         
@@ -218,9 +219,9 @@ class ImageStorage:
             # Use INSERT OR REPLACE for idempotent operation
             conn.execute("""
                 INSERT OR REPLACE INTO image_index 
-                (image_id, file_path, collection, doc_hash, page_num, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (image_id, stored_path, collection, doc_hash, page_num, now))
+                (image_id, file_path, collection, doc_hash, page_num, is_background, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (image_id, stored_path, collection, doc_hash, page_num, kwargs.get("is_background"), now))
             
             conn.commit()
         except sqlite3.Error as e:
@@ -236,7 +237,8 @@ class ImageStorage:
         file_path: Union[Path, str],
         collection: Optional[str] = None,
         doc_hash: Optional[str] = None,
-        page_num: Optional[int] = None
+        page_num: Optional[int] = None,
+        **kwargs
     ) -> str:
         """Register an existing image file in the database index.
         
@@ -292,9 +294,9 @@ class ImageStorage:
             # Use INSERT OR REPLACE for idempotent operation
             conn.execute("""
                 INSERT OR REPLACE INTO image_index 
-                (image_id, file_path, collection, doc_hash, page_num, created_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (image_id, stored_path, collection, doc_hash, page_num, now))
+                (image_id, file_path, collection, doc_hash, page_num, is_background, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (image_id, stored_path, collection, doc_hash, page_num, kwargs.get("is_background"), now))
             
             conn.commit()
         except sqlite3.Error as e:
@@ -364,7 +366,64 @@ class ImageStorage:
                 if not p.is_absolute():
                     p = self.images_root / p
                 return str(p)
-
+ 
+    async def adetect_background(
+        self, 
+        image_id: str, 
+        image_path: str, 
+        min_edge: float = 8.0, 
+        min_dim: int = 150
+    ) -> bool:
+        """Detect if an image is a background/decorative image (Async).
+        
+        Results are persisted in SQLite to avoid repeated computation.
+        
+        Args:
+            image_id: Unique image identifier.
+            image_path: Absolute path to the image file.
+            min_edge: Edge strength threshold (lower = more sensitive).
+            min_dim: Minimum dimension for content images.
+            
+        Returns:
+            True if it's a background image, False otherwise.
+        """
+        try:
+            # 1. Check DB first
+            meta = await self.aget_image_metadata(image_id)
+            if meta and meta.get("is_background") is not None:
+                return bool(meta["is_background"])
+ 
+            # 2. Compute
+            from PIL import Image
+            import numpy as np
+ 
+            # Run blocking PIL/Numpy calls in a thread pool
+            def _compute():
+                img = Image.open(image_path).convert("RGB")
+                w, h = img.size
+                if w < min_dim or h < min_dim:
+                    return 1
+                
+                if w > 800 or h > 800:
+                    img.thumbnail((800, 800))
+                
+                arr = np.array(img, dtype=np.float32)
+                gray = arr.mean(axis=2)
+                gx = np.diff(gray, axis=1)
+                gy = np.diff(gray, axis=0)
+                edge_strength = (np.abs(gx).mean() + np.abs(gy).mean()) / 2.0
+                return 1 if edge_strength < min_edge else 0
+ 
+            import asyncio
+            is_bg = await asyncio.to_thread(_compute)
+            
+            # 3. Persist
+            await self.aupdate_image_metadata(image_id, is_background=is_bg)
+            return bool(is_bg)
+        except Exception:
+            # Fallback to False (not background) on any error
+            return False
+ 
     async def aget_image_metadata(self, image_id: str) -> Optional[Dict[str, Any]]:
         """Get full metadata for an image asynchronously.
         

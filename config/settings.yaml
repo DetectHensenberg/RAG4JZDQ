@@ -54,6 +54,8 @@ retrieval:
   rrf_k: 60  # RRF constant
   query_rewrite: false  # LLM query rewriting (requires LLM calls)
   hyde_enabled: false   # HyDE - Hypothetical Document Embedding (requires LLM calls)
+  parent_retrieval_mode: "auto"  # auto | always | never
+  graph_rag_mode: "auto"         # auto | always | never
 
 # =============================================================================
 # Rerank Configuration

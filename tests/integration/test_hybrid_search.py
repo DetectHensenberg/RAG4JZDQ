@@ -15,6 +15,7 @@ Test Strategy:
 
 import pytest
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
 from unittest.mock import MagicMock, patch
 
@@ -633,6 +634,69 @@ class TestHybridSearchConfig:
         # Both should be called
         assert dense.call_count == 1
         assert sparse.call_count == 1
+        assert len(results) > 0
+
+    def test_strategy_router_controls_context_expansion(
+        self,
+        query_processor: QueryProcessor,
+        rrf_fusion: RRFFusion,
+        sample_dense_results: List[RetrievalResult],
+    ):
+        """Test that StrategyRouter decisions control expansion hooks."""
+        dense = MockDenseRetriever(results=sample_dense_results)
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=dense,
+            sparse_retriever=None,
+            fusion=rrf_fusion,
+        )
+
+        expanded_parent = sample_dense_results[:2]
+        expanded_graph = sample_dense_results[:1]
+        hybrid.strategy_router = MagicMock()
+        hybrid.strategy_router.route.return_value = SimpleNamespace(
+            use_parent_retrieval=True,
+            use_graph_rag=True,
+        )
+        hybrid.parent_store = object()
+        hybrid.graph_store = object()
+        hybrid._expand_with_parents = MagicMock(return_value=expanded_parent)
+        hybrid._expand_with_graph = MagicMock(return_value=expanded_graph)
+
+        results = hybrid.search("比较 Azure OpenAI 的关系", top_k=5)
+
+        hybrid.strategy_router.route.assert_called_once()
+        hybrid._expand_with_parents.assert_called_once()
+        hybrid._expand_with_graph.assert_called_once_with(expanded_parent, "比较 Azure OpenAI 的关系")
+        assert results == expanded_graph
+
+    def test_strategy_router_can_skip_expansion(
+        self,
+        query_processor: QueryProcessor,
+        rrf_fusion: RRFFusion,
+        sample_dense_results: List[RetrievalResult],
+    ):
+        """Test that disabled routing decisions leave results untouched."""
+        dense = MockDenseRetriever(results=sample_dense_results)
+        hybrid = HybridSearch(
+            query_processor=query_processor,
+            dense_retriever=dense,
+            sparse_retriever=None,
+            fusion=rrf_fusion,
+        )
+
+        hybrid.strategy_router = MagicMock()
+        hybrid.strategy_router.route.return_value = SimpleNamespace(
+            use_parent_retrieval=False,
+            use_graph_rag=False,
+        )
+        hybrid._expand_with_parents = MagicMock()
+        hybrid._expand_with_graph = MagicMock()
+
+        results = hybrid.search("普通查询", top_k=3)
+
+        hybrid._expand_with_parents.assert_not_called()
+        hybrid._expand_with_graph.assert_not_called()
         assert len(results) > 0
 
 
