@@ -384,8 +384,9 @@ async def check_bid_response_stream(
 
     try:
         messages = [Message(role="user", content=prompt)]
-        if hasattr(llm, "stream_chat") and callable(llm.stream_chat):
-            async for chunk in llm.stream_chat(messages):
+        stream_func = getattr(llm, "stream_chat", None) or getattr(llm, "chat_stream", None)
+        if stream_func and callable(stream_func):
+            async for chunk in stream_func(messages):
                 token = chunk if isinstance(chunk, str) else str(chunk)
                 full_response += token
                 yield {"type": "token", "content": token}

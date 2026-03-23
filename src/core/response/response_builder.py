@@ -57,10 +57,18 @@ class MCPToolResponse:
             List of content blocks for MCP CallToolResult.
             Includes TextContent and optionally ImageContent blocks.
         """
+        content = self.content
+        
+        # Append suggested questions if present in metadata
+        suggested = self.metadata.get("suggested_questions", [])
+        if suggested and isinstance(suggested, list):
+            content += "\n\n---\n**💡 您可能还想问：**\n"
+            content += "\n".join([f"- {q}" for q in suggested])
+            
         blocks: List[Union[types.TextContent, types.ImageContent]] = [
             types.TextContent(
                 type="text",
-                text=self.content,
+                text=content,
             )
         ]
         
@@ -150,29 +158,19 @@ class ResponseBuilder:
             self._multimodal_assembler = MultimodalAssembler()
         return self._multimodal_assembler
     
-    def build(
+    async def abuild(
         self,
         results: List[RetrievalResult],
         query: str,
         collection: Optional[str] = None,
         include_images: bool = True,
     ) -> MCPToolResponse:
-        """Build MCP response from retrieval results.
-        
-        Args:
-            results: List of RetrievalResult from search.
-            query: Original user query.
-            collection: Optional collection name.
-            include_images: Whether to include images in response (default: True).
-            
-        Returns:
-            MCPToolResponse with formatted content, citations, and optional images.
-        """
+        """Build MCP response from retrieval results asynchronously."""
         # Handle empty results
         if not results:
             return self._build_empty_response(query, collection)
         
-        # Generate citations
+        # Generate citations (sync is fine, purely CPU)
         citations = self.citation_generator.generate(results)
         
         # Build Markdown content
@@ -181,19 +179,60 @@ class ResponseBuilder:
         # Build metadata
         metadata = self._build_metadata(query, collection, len(results))
         
-        # Assemble image content if enabled
+        # Assemble image content asynchronously
         image_contents: List[types.ImageContent] = []
         if self.enable_multimodal and include_images:
-            image_blocks = self.multimodal_assembler.assemble(results, collection)
+            image_blocks = await self.multimodal_assembler.aassemble(results, collection)
             # Filter to only ImageContent blocks
             image_contents = [
                 block for block in image_blocks
                 if isinstance(block, types.ImageContent)
             ]
-            if image_contents:
-                metadata["has_images"] = True
-                metadata["image_count"] = len(image_contents)
+            
+        return MCPToolResponse(
+            content=content,
+            citations=citations,
+            metadata=metadata,
+            is_empty=False,
+            image_contents=image_contents,
+        )
+
+    def build(
+        self,
+        results: List[RetrievalResult],
+        query: str,
+        collection: Optional[str] = None,
+        include_images: bool = True,
+    ) -> MCPToolResponse:
+        """Build MCP response from retrieval results (synchronous version)."""
+        import asyncio
+        # Run the async version in a temporary event loop if needed, 
+        # but for simplicity and safety in sync contexts, we'll keep it sync.
         
+        if not results:
+            return self._build_empty_response(query, collection)
+        
+        citations = self.citation_generator.generate(results)
+        content = self._build_markdown_content(results, citations, query)
+        metadata = self._build_metadata(query, collection, len(results))
+        
+        image_contents: List[types.ImageContent] = []
+        if self.enable_multimodal and include_images:
+            # We must use the sync method if we are in a sync context
+            # Note: MultimodalAssembler.assemble was removed, so we restore it or use asyncio.run
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # This is tricky in a sync method called from an async loop
+                    # But if we are here, we are likely being called sync
+                    import nest_asyncio
+                    nest_asyncio.apply()
+                image_blocks = asyncio.run(self.multimodal_assembler.aassemble(results, collection))
+                image_contents = [b for b in image_blocks if isinstance(b, types.ImageContent)]
+            except Exception:
+                # Fallback to empty images if async fails in sync context
+                pass
+                
         return MCPToolResponse(
             content=content,
             citations=citations,

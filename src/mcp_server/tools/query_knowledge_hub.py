@@ -83,6 +83,7 @@ class QueryKnowledgeHubConfig:
     max_top_k: int = 20
     default_collection: str = "default"
     enable_rerank: bool = True
+    enable_suggested_questions: bool = True
 
 
 class QueryKnowledgeHubTool:
@@ -125,6 +126,7 @@ class QueryKnowledgeHubTool:
         self._reranker = reranker
         self._embedding_client = None
         self._response_builder = response_builder or ResponseBuilder()
+        self._suggested_generator: Optional[SuggestedQuestionGenerator] = None
         
         # Track initialization state
         self._initialized = False
@@ -170,6 +172,10 @@ class QueryKnowledgeHubTool:
         from src.ingestion.storage.bm25_indexer import BM25Indexer
         from src.libs.embedding.embedding_factory import EmbeddingFactory
         from src.libs.vector_store.vector_store_factory import VectorStoreFactory
+        from src.libs.llm.llm_factory import LLMFactory
+        from src.ingestion.storage.parent_store import ParentStore
+        from src.ingestion.storage.graph_store import GraphStore
+        from src.core.query_engine.strategy_router import StrategyRouter
         
         # === Fully cached components (stateless, never go stale) ===
         if self._embedding_client is None:
@@ -211,6 +217,24 @@ class QueryKnowledgeHubTool:
             dense_retriever=dense_retriever,
             sparse_retriever=sparse_retriever,
         )
+        
+        # === Inject Retrieval Augmentation Components ===
+        # 1. Parent Store (SQLite)
+        parent_db_path = str(resolve_path(f"data/db/parent_store/{collection}.db"))
+        self._hybrid_search.parent_store = ParentStore(db_path=parent_db_path)
+        
+        # 2. Graph Store (SQLite)
+        graph_db_path = str(resolve_path(f"data/db/graph_store/{collection}.db"))
+        self._hybrid_search.graph_store = GraphStore(db_path=graph_db_path)
+        
+        # 3. Strategy Router (LLM-driven)
+        try:
+            # Re-use or create LLM for intent recognition
+            llm = LLMFactory.create(self.settings)
+            self._hybrid_search.strategy_router = StrategyRouter(settings=self.settings, llm=llm)
+        except Exception as e:
+            logger.warning(f"Failed to initialize StrategyRouter with LLM: {e}")
+            self._hybrid_search.strategy_router = StrategyRouter(settings=self.settings)
         
         self._current_collection = collection
         self._initialized = True
@@ -257,29 +281,28 @@ class QueryKnowledgeHubTool:
         trace.metadata["collection"] = effective_collection
         trace.metadata["source"] = "mcp"
 
-        logger.info(f"Executing query_knowledge_hub for query: {query[:50]}")
+        logger.info(f"[Thinking] Initializing: Setting up retrieval components for {effective_collection}...")
         try:
             # Initialize components for collection
-            logger.info(f"Initializing for collection: {effective_collection}")
             await asyncio.to_thread(self._ensure_initialized, effective_collection)
             
             # Perform hybrid search
-            logger.info("Performing hybrid search...")
             results = await asyncio.to_thread(self._perform_search, query, effective_top_k, trace)
-            logger.info(f"Search done, found {len(results) if results else 0} results")
             
             # Apply reranking if enabled
             if self.config.enable_rerank and results:
-                logger.info("Applying reranking...")
                 results = await asyncio.to_thread(self._apply_rerank, query, results, effective_top_k, trace)
-                logger.info("Reranking done")
             
             # Build response
-            response = self._response_builder.build(
+            logger.info("[Thinking] Finalizing: Assembling formatted response...")
+            response = await self._response_builder.abuild(
                 results=results,
                 query=query,
                 collection=effective_collection,
             )
+            
+            # Inject trace_id into response metadata for feedback attribution
+            response.metadata["trace_id"] = trace.trace_id
             
             # Store final results in trace for dashboard display
             trace.metadata["final_results"] = [
@@ -298,12 +321,23 @@ class QueryKnowledgeHubTool:
                 f"is_empty={response.is_empty}"
             )
             
-            TraceCollector().collect(trace)
+            await TraceCollector().collect_async(trace)
+            
+            # Generate suggested questions if enabled
+            if self.config.enable_suggested_questions:
+                if self._suggested_generator is None:
+                    from src.core.response.suggested_questions import SuggestedQuestionGenerator
+                    self._suggested_generator = SuggestedQuestionGenerator(self.settings)
+                
+                questions = await self._suggested_generator.generate(query, response.content)
+                if questions:
+                    response.metadata["suggested_questions"] = questions
+                    
             return response
             
         except Exception as e:
             logger.exception(f"query_knowledge_hub failed: {e}")
-            TraceCollector().collect(trace)
+            await TraceCollector().collect_async(trace)
             # Return error response
             return self._build_error_response(query, effective_collection, str(e))
     

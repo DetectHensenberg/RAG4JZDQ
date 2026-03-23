@@ -102,7 +102,8 @@ def extract_achievements_from_pdf(
 
     try:
         if hasattr(llm, "chat"):
-            response = llm.chat(prompt)
+            from src.libs.llm.base_llm import Message
+            response = llm.chat([Message(role="user", content=prompt)])
         elif hasattr(llm, "generate"):
             response = llm.generate(prompt)
         else:

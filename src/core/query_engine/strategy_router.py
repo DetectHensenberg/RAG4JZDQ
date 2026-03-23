@@ -1,239 +1,174 @@
-"""Dynamic retrieval strategy routing for Parent Retrieval and GraphRAG."""
-
-from __future__ import annotations
-
-import json
 import logging
+import json
 import re
-import time
 from dataclasses import dataclass
-from typing import Any, Optional
+from typing import Any, Dict, List, Optional, TYPE_CHECKING
 
-from src.libs.llm.base_llm import BaseLLM, Message
+from src.libs.llm.base_llm import Message
+
+if TYPE_CHECKING:
+    from src.core.settings import Settings
+    from src.libs.llm.base_llm import BaseLLM
 
 logger = logging.getLogger(__name__)
-
-_PARENT_PATTERNS = [
-    r"全文",
-    r"完整",
-    r"详细",
-    r"上下文",
-    r"章节",
-    r"总结",
-    r"概括",
-    r"\bfull\b",
-    r"\bcomplete\b",
-    r"\bdetailed\b",
-    r"\bcontext\b",
-    r"\bchapter\b",
-    r"\bsummar(?:y|ize)\b",
-]
-_GRAPH_PATTERNS = [
-    r"关系",
-    r"关联",
-    r"比较",
-    r"对比",
-    r"区别",
-    r"差异",
-    r"因果",
-    r"影响",
-    r"\brelationship\b",
-    r"\bcompare\b",
-    r"\bcomparison\b",
-    r"\bdifference\b",
-    r"\bimpact\b",
-    r"\bcause\b",
-]
-
-_CLASSIFIER_PROMPT = """你是一个查询分类器。分析用户查询，判断是否需要启用检索增强策略。
-
-- parent_retrieval: 查询需要长段落、完整章节或上下文连续性时开启
-- graph_rag: 查询涉及实体关系、比较、因果链或概念关联时开启
-
-用户查询: {query}
-
-仅输出 JSON:
-{{"parent": true, "graph": false, "reason": "一句话理由"}}"""
 
 
 @dataclass(frozen=True)
 class RoutingDecision:
-    """Routing decision for retrieval enhancements."""
-
-    use_parent_retrieval: bool = False
-    use_graph_rag: bool = False
-    reasoning: str = ""
-    method: str = "config"
-    elapsed_ms: float = 0.0
+    """Decision on which retrieval augmentation strategies to use.
+    
+    Attributes:
+        use_parent_retrieval: Whether to expand context using parent chunks.
+        use_graph_rag: Whether to append graph relationship context.
+        reasoning: Optional string explaining the decision.
+    """
+    use_parent_retrieval: bool
+    use_graph_rag: bool
+    reasoning: Optional[str] = None
 
 
 class StrategyRouter:
-    """Route retrieval enhancements using config, LLM, and pattern fallback."""
+    """Intelligent router for retrieval augmentation strategies.
+    
+    Uses LLM-based intent recognition or rule-based patterns to decide 
+    whether to apply Parent Document Retrieval and GraphRAG for a given query.
+    """
 
-    def __init__(self, settings: Any, llm: Optional[BaseLLM] = None) -> None:
-        retrieval = getattr(settings, "retrieval", None)
-        self.parent_mode = getattr(retrieval, "parent_retrieval_mode", "never")
-        self.graph_mode = getattr(retrieval, "graph_rag_mode", "never")
+    def __init__(
+        self,
+        settings: "Settings",
+        llm: Optional["BaseLLM"] = None,
+    ):
+        """Initialize StrategyRouter.
+        
+        Args:
+            settings: Application settings.
+            llm: Optional LLM provider for intent recognition.
+        """
+        self.settings = settings
         self.llm = llm
+        
+        # Extract modes from settings
+        # Default to 'never' if not found (legacy compatibility)
+        retrieval_cfg = getattr(settings, "retrieval", None)
+        self.parent_mode = getattr(retrieval_cfg, "parent_retrieval_mode", "never")
+        self.graph_mode = getattr(retrieval_cfg, "graph_rag_mode", "never")
+        
+        logger.info(
+            f"StrategyRouter initialized: parent_mode={self.parent_mode}, "
+            f"graph_mode={self.graph_mode}, llm={llm is not None}"
+        )
 
     def route(self, query: str, trace: Optional[Any] = None) -> RoutingDecision:
-        """Return a routing decision for the given query."""
-        started = time.monotonic()
-        decision: RoutingDecision
+        """Route query to appropriate retrieval strategies.
+        
+        Args:
+            query: User's raw query string.
+            trace: Optional trace context.
+            
+        Returns:
+            RoutingDecision containing flags for parent retrieval and GraphRAG.
+        """
+        # 1. Handle explicit 'always' / 'never' modes first (zero cost)
+        use_parent = False
+        if self.parent_mode == "always":
+            use_parent = True
+        elif self.parent_mode == "never":
+            use_parent = False
+        
+        use_graph = False
+        if self.graph_mode == "always":
+            use_graph = True
+        elif self.graph_mode == "never":
+            use_graph = False
 
+        # 2. If both are deterministic, return immediately
         if self.parent_mode != "auto" and self.graph_mode != "auto":
-            decision = RoutingDecision(
-                use_parent_retrieval=self.parent_mode == "always",
-                use_graph_rag=self.graph_mode == "always",
-                reasoning="static_config",
-                method="config",
-            )
-        else:
-            decision = self._route_with_fallbacks(query)
-            decision = RoutingDecision(
-                use_parent_retrieval=self._apply_mode_override(
-                    self.parent_mode,
-                    decision.use_parent_retrieval,
-                ),
-                use_graph_rag=self._apply_mode_override(
-                    self.graph_mode,
-                    decision.use_graph_rag,
-                ),
-                reasoning=decision.reasoning,
-                method=decision.method,
+            return RoutingDecision(
+                use_parent_retrieval=use_parent,
+                use_graph_rag=use_graph,
+                reasoning="Deterministic modes from settings"
             )
 
-        elapsed_ms = (time.monotonic() - started) * 1000.0
-        final_decision = RoutingDecision(
-            use_parent_retrieval=decision.use_parent_retrieval,
-            use_graph_rag=decision.use_graph_rag,
-            reasoning=decision.reasoning,
-            method=decision.method,
-            elapsed_ms=elapsed_ms,
-        )
+        # 3. Strategy recognition (Auto mode)
+        # Try LLM first if available, otherwise fallback to patterns
+        decision = None
+        if self.llm is not None:
+            logger.info("[Thinking] Routing: Analyzing query intent with LLM...")
+            decision = self._route_with_ll(query, trace=trace)
+            
+        if decision is None:
+            logger.info("[Thinking] Routing: Using pattern matching for strategy selection...")
+            decision = self._route_with_patterns(query)
 
-        if trace is not None:
-            trace.record_stage(
-                "strategy_routing",
-                {
-                    "method": final_decision.method,
-                    "parent_mode": self.parent_mode,
-                    "graph_mode": self.graph_mode,
-                    "use_parent_retrieval": final_decision.use_parent_retrieval,
-                    "use_graph_rag": final_decision.use_graph_rag,
-                    "reasoning": final_decision.reasoning,
-                },
-                elapsed_ms=elapsed_ms,
-            )
-
-        return final_decision
-
-    def _route_with_fallbacks(self, query: str) -> RoutingDecision:
-        """Run the LLM classifier, then pattern fallback, then default-off."""
-        llm_decision = self._route_with_llm(query)
-        if llm_decision is not None:
-            return llm_decision
-
-        pattern_decision = self._route_with_patterns(query)
-        if pattern_decision is not None:
-            return pattern_decision
+        # 4. Final override based on settings
+        final_parent = use_parent if self.parent_mode != "auto" else decision.use_parent_retrieval
+        final_graph = use_graph if self.graph_mode != "auto" else decision.use_graph_rag
 
         return RoutingDecision(
-            reasoning="default_off_after_fallbacks",
-            method="config",
+            use_parent_retrieval=final_parent,
+            use_graph_rag=final_graph,
+            reasoning=decision.reasoning
         )
 
-    def _route_with_llm(self, query: str) -> Optional[RoutingDecision]:
-        """Classify query intent with the configured LLM."""
+    def _route_with_ll(self, query: str, trace: Optional[Any] = None) -> Optional[RoutingDecision]:
+        """Use LLM to identify query intent and select strategies."""
         if self.llm is None:
             return None
 
+        system_prompt = (
+            "You are a RAG Strategy Router. Your task is to analyze user queries and decide "
+            "which retrieval augmentation strategies are needed.\n\n"
+            "Strategies:\n"
+            "1. Parent Retrieval: Use when the query asks for background, context, summaries, "
+            "explanations of broad concepts, or 'why/how' questions that need more than a short snippet.\n"
+            "2. GraphRAG: Use when the query asks about relationships, connections between entities, "
+            "comparisons, or complex networks of information.\n\n"
+            "Output your decision in JSON format EXACTLY as shown:\n"
+            '{"parent": true/false, "graph": true/false, "reason": "brief explanation"}'
+        )
+
+        messages = [
+            Message(role="system", content=system_prompt),
+            Message(role="user", content=f"Query: {query}"),
+        ]
+
         try:
-            response = self.llm.chat(
-                [
-                    Message(role="user", content=_CLASSIFIER_PROMPT.format(query=query)),
-                ],
-                temperature=0.0,
-                max_tokens=100,
-            )
-            parsed = self._parse_llm_response(response.content)
-            return RoutingDecision(
-                use_parent_retrieval=parsed["parent"],
-                use_graph_rag=parsed["graph"],
-                reasoning=parsed["reason"],
-                method="llm",
-            )
-        except Exception as exc:
-            logger.warning("StrategyRouter LLM classification failed: %s", exc)
-            return None
+            # Low temperature for consistency
+            response = self.llm.chat(messages, trace=trace, temperature=0.1)
+            # Find JSON in response
+            match = re.search(r"\{.*\}", response.content, re.DOTALL)
+            if match:
+                data = json.loads(match.group(0))
+                return RoutingDecision(
+                    use_parent_retrieval=bool(data.get("parent", False)),
+                    use_graph_rag=bool(data.get("graph", False)),
+                    reasoning=data.get("reason", "LLM decided")
+                )
+        except Exception as e:
+            logger.warning(f"LLM routing failed: {e}")
+            
+        return None
 
-    def _route_with_patterns(self, query: str) -> Optional[RoutingDecision]:
-        """Fallback to pattern-based routing when the LLM is unavailable."""
-        try:
-            parent_match = self._matches_any_pattern(query, _PARENT_PATTERNS)
-            graph_match = self._matches_any_pattern(query, _GRAPH_PATTERNS)
-            reasons = []
-            if parent_match:
-                reasons.append("parent_keywords")
-            if graph_match:
-                reasons.append("graph_keywords")
-            return RoutingDecision(
-                use_parent_retrieval=parent_match,
-                use_graph_rag=graph_match,
-                reasoning=",".join(reasons) if reasons else "no_pattern_match",
-                method="pattern",
-            )
-        except Exception as exc:
-            logger.warning("StrategyRouter pattern fallback failed: %s", exc)
-            return None
+    def _route_with_patterns(self, query: str) -> RoutingDecision:
+        """Rule-based fallback for intent recognition."""
+        # Parent Retrieval Patterns: summary, context, broad questions
+        parent_patterns = [
+            r"什么是|介绍|总结|概括|背景|原理",
+            r"what is|explain|summary|background|how does|context",
+        ]
+        
+        # GraphRAG Patterns: relationships, connections, comparisons
+        graph_patterns = [
+            r"关系|联系|区别|对比|影响|作用",
+            r"relationship|connection|vs|compare|impact|between",
+        ]
 
-    def _apply_mode_override(self, mode: str, auto_value: bool) -> bool:
-        """Let static modes override auto decisions."""
-        if mode == "always":
-            return True
-        if mode == "never":
-            return False
-        return auto_value
+        use_parent = any(re.search(p, query, re.IGNORECASE) for p in parent_patterns)
+        use_graph = any(re.search(p, query, re.IGNORECASE) for p in graph_patterns)
 
-    def _matches_any_pattern(self, query: str, patterns: list[str]) -> bool:
-        """Return True when any configured pattern matches."""
-        return any(re.search(pattern, query, flags=re.IGNORECASE) for pattern in patterns)
-
-    def _parse_llm_response(self, raw_text: str) -> dict[str, Any]:
-        """Parse structured JSON from the classifier response."""
-        text = raw_text.strip()
-        if text.startswith("```json"):
-            text = text[7:]
-        elif text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        text = text.strip()
-
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1 or start >= end:
-            raise ValueError("Classifier response does not contain JSON object")
-
-        parsed = json.loads(text[start:end + 1])
-        parent = self._coerce_bool(parsed.get("parent"))
-        graph = self._coerce_bool(parsed.get("graph"))
-        reason = str(parsed.get("reason", "")).strip() or "llm_classification"
-
-        return {
-            "parent": parent,
-            "graph": graph,
-            "reason": reason,
-        }
-
-    def _coerce_bool(self, value: Any) -> bool:
-        """Coerce permissive boolean-like values from LLM JSON."""
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered in {"true", "yes", "1"}:
-                return True
-            if lowered in {"false", "no", "0"}:
-                return False
-        raise ValueError(f"Expected boolean value, got {value!r}")
+        return RoutingDecision(
+            use_parent_retrieval=use_parent,
+            use_graph_rag=use_graph,
+            reasoning="Pattern matching fallback"
+        )

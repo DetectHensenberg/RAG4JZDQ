@@ -446,13 +446,16 @@ async def bid_compare(req: BidCompareRequest):
 async def bid_list_params(
     doc_type: Optional[str] = None,
     category: Optional[str] = None,
-    limit: int = 100,
+    page: int = 1,
+    page_size: int = 50,
 ):
     """List extracted product parameter records."""
     from src.bid.product_db import list_params
 
     try:
-        records = list_params(doc_type=doc_type, category=category, limit=limit)
+        limit = page_size
+        offset = (page - 1) * page_size
+        records = list_params(doc_type=doc_type, category=category, limit=limit, offset=offset)
         return {
             "ok": True,
             "data": [

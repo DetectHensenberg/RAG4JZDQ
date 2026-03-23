@@ -288,6 +288,7 @@ class HybridSearch:
             return final_results
         
         # Step 1: Process query
+        logger.info("[Thinking] Retrieving: Processing query and searching indexes...")
         _t0 = time.monotonic()
         processed_query = self._process_query(query)
         _elapsed = (time.monotonic() - _t0) * 1000.0
@@ -352,6 +353,7 @@ class HybridSearch:
         
         # Step 5.5: Rerank with cross-encoder if available
         if self.reranker is not None and fused_results:
+            logger.info(f"[Thinking] Reranking: Scoring {len(fused_results)} candidates...")
             # Request 2x top_k so source diversification has enough candidates
             rerank_top_k = effective_top_k * 2
             rerank_result = self.reranker.rerank(query, fused_results, top_k=rerank_top_k)
@@ -391,7 +393,12 @@ class HybridSearch:
         logger.debug(f"HybridSearch: returning {len(final_results)} results")
 
         if self.strategy_router is not None:
+            logger.info("[Thinking] Routing: Optimizing retrieval strategy...")
             routing = self.strategy_router.route(query, trace=trace)
+            if (routing.use_parent_retrieval and self.parent_store is not None) or \
+               (routing.use_graph_rag and self.graph_store is not None):
+                logger.info("[Thinking] Expanding: Augmenting with Graph/Parent context...")
+            
             if routing.use_parent_retrieval and self.parent_store is not None:
                 final_results = self._expand_with_parents(final_results)
             if routing.use_graph_rag and self.graph_store is not None:

@@ -211,45 +211,6 @@ class MultimodalAssembler:
         
         return refs
     
-    def resolve_image_path(
-        self,
-        ref: ImageReference,
-        collection: Optional[str] = None,
-    ) -> Optional[str]:
-        """Resolve the filesystem path for an image reference.
-        
-        Args:
-            ref: ImageReference to resolve.
-            collection: Optional collection name for path construction.
-            
-        Returns:
-            Absolute file path if found, None otherwise.
-        """
-        # Use explicit path if available
-        if ref.file_path:
-            path = Path(ref.file_path)
-            if path.exists():
-                return str(path.resolve())
-        
-        # Try ImageStorage lookup
-        if self._image_storage is not None:
-            try:
-                path = self._image_storage.get_image_path(ref.image_id)
-                if path and Path(path).exists():
-                    return path
-            except Exception as e:
-                logger.warning(f"ImageStorage lookup failed for {ref.image_id}: {e}")
-        
-        # Convention-based path: data/images/{collection}/{image_id}.png
-        if collection:
-            from src.core.settings import resolve_path
-            for ext in [".png", ".jpg", ".jpeg", ".webp"]:
-                candidate = resolve_path(f"data/images/{collection}/{ref.image_id}{ext}")
-                if candidate.exists():
-                    return str(candidate.resolve())
-        
-        return None
-    
     async def aresolve_image_path(
         self,
         ref: ImageReference,
@@ -264,30 +225,73 @@ class MultimodalAssembler:
         Returns:
             Absolute file path if found, None otherwise.
         """
-        if ref.file_path:
-            path = Path(ref.file_path)
-            if path.exists():
-                return str(path.resolve())
+        import anyio
         
+        # Use explicit path if available
+        if ref.file_path:
+            path = anyio.Path(ref.file_path)
+            if await path.exists():
+                return str(await path.resolve())
+        
+        # Try ImageStorage lookup
         if self._image_storage is not None:
             try:
                 if hasattr(self._image_storage, "aget_image_path"):
-                    path = await self._image_storage.aget_image_path(ref.image_id)
+                    path_str = await self._image_storage.aget_image_path(ref.image_id)
                 else:
-                    path = self._image_storage.get_image_path(ref.image_id)
-                if path and Path(path).exists():
-                    return path
+                    path_str = self._image_storage.get_image_path(ref.image_id)
+                
+                if path_str and await anyio.Path(path_str).exists():
+                    return path_str
             except Exception as e:
                 logger.warning(f"ImageStorage async lookup failed for {ref.image_id}: {e}")
         
+        # Convention-based path: data/images/{collection}/{image_id}.png
         if collection:
             from src.core.settings import resolve_path
             for ext in [".png", ".jpg", ".jpeg", ".webp"]:
-                candidate = resolve_path(f"data/images/{collection}/{ref.image_id}{ext}")
-                if candidate.exists():
-                    return str(candidate.resolve())
+                candidate_str = resolve_path(f"data/images/{collection}/{ref.image_id}{ext}")
+                candidate = anyio.Path(candidate_str)
+                if await candidate.exists():
+                    return str(await candidate.resolve())
         
         return None
+
+    async def aload_image(
+        self,
+        file_path: str,
+    ) -> Optional[ImageContent]:
+        """Load and encode an image file asynchronously."""
+        import anyio
+        import base64
+        try:
+            path = anyio.Path(file_path)
+            if not await path.exists():
+                logger.warning(f"Image file not found: {file_path}")
+                return None
+            
+            # Read file content asynchronously
+            data = await path.read_bytes()
+            if not data:
+                logger.warning(f"Empty image file: {file_path}")
+                return None
+            
+            # Detect MIME type (sync detector is fine for CPU bits)
+            from pathlib import Path as SyncPath
+            mime_type = self._detect_mime_type(SyncPath(file_path), data)
+            
+            # Encode to base64
+            base64_data = base64.b64encode(data).decode("utf-8")
+            
+            return ImageContent(
+                image_id=SyncPath(file_path).stem,
+                data=base64_data,
+                mime_type=mime_type,
+            )
+            
+        except Exception as e:
+            logger.error(f"Failed to load image {file_path} asynchronously: {e}")
+            return None
     
     def load_image(
         self,
@@ -357,20 +361,12 @@ class MultimodalAssembler:
         logger.debug(f"Unknown image format for {path}, defaulting to image/png")
         return "image/png"
     
-    def assemble_for_result(
+    async def aassemble_for_result(
         self,
         result: RetrievalResult,
         collection: Optional[str] = None,
     ) -> List[Union[types.TextContent, types.ImageContent]]:
-        """Assemble multimodal content blocks for a single result.
-        
-        Args:
-            result: RetrievalResult to process.
-            collection: Optional collection name for path resolution.
-            
-        Returns:
-            List of MCP content blocks (TextContent and ImageContent).
-        """
+        """Assemble multimodal content blocks for a single result asynchronously."""
         blocks: List[Union[types.TextContent, types.ImageContent]] = []
         
         # Extract image references
@@ -378,14 +374,14 @@ class MultimodalAssembler:
         
         # Load and add images
         for ref in refs:
-            # Resolve path
-            file_path = self.resolve_image_path(ref, collection)
+            # Resolve path asynchronously
+            file_path = await self.aresolve_image_path(ref, collection)
             if not file_path:
                 logger.debug(f"Could not resolve path for image: {ref.image_id}")
                 continue
             
-            # Load image
-            image_content = self.load_image(file_path)
+            # Load image asynchronously
+            image_content = await self.aload_image(file_path)
             if image_content is None:
                 continue
             
@@ -402,36 +398,30 @@ class MultimodalAssembler:
                 blocks.append(types.TextContent(type="text", text=caption_text))
         
         return blocks
-    
-    def assemble(
+
+    async def aassemble(
         self,
         results: List[RetrievalResult],
         collection: Optional[str] = None,
     ) -> List[Union[types.TextContent, types.ImageContent]]:
-        """Assemble multimodal content blocks for multiple results.
-        
-        Args:
-            results: List of RetrievalResult to process.
-            collection: Optional collection name for path resolution.
-            
-        Returns:
-            List of all MCP content blocks from all results.
-        """
+        """Assemble multimodal content blocks for multiple results asynchronously."""
         all_blocks: List[Union[types.TextContent, types.ImageContent]] = []
-        seen_image_ids: set = set()
+        seen_image_hashes: set = set()
         
-        for result in results:
-            blocks = self.assemble_for_result(result, collection)
-            
+        # We can parallelize processing multiple results
+        import asyncio
+        tasks = [self.aassemble_for_result(r, collection) for r in results]
+        results_blocks = await asyncio.gather(*tasks)
+        
+        for blocks in results_blocks:
             # Deduplicate images across results
             for block in blocks:
                 if isinstance(block, types.ImageContent):
                     # Check if we've seen this image
-                    # ImageContent doesn't have image_id, so we hash the data
-                    data_hash = hash(block.data[:100])  # Use prefix for efficiency
-                    if data_hash in seen_image_ids:
+                    data_hash = hash(block.data[:100])
+                    if data_hash in seen_image_hashes:
                         continue
-                    seen_image_ids.add(data_hash)
+                    seen_image_hashes.add(data_hash)
                 
                 all_blocks.append(block)
         

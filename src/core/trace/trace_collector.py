@@ -51,6 +51,11 @@ class TraceCollector:
         except OSError:
             logger.exception("Failed to write trace %s", trace.trace_id)
 
+    async def collect_async(self, trace: TraceContext) -> None:
+        """Asynchronous version of collect."""
+        import asyncio
+        await asyncio.to_thread(self.collect, trace)
+
     @property
     def path(self) -> Path:
         """Return the resolved path of the traces file."""

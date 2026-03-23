@@ -56,6 +56,7 @@ retrieval:
   hyde_enabled: false   # HyDE - Hypothetical Document Embedding (requires LLM calls)
   parent_retrieval_mode: "auto"  # auto | always | never
   graph_rag_mode: "auto"         # auto | always | never
+  enable_suggested_questions: true
 
 # =============================================================================
 # Rerank Configuration

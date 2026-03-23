@@ -4,6 +4,8 @@ import sqlite_utils
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 from src.core.types import Chunk
+from src.core.storage.sqlite_manager import SQLiteManager
+from src.core.types import Chunk
 from src.observability.logger import get_logger
 
 logger = get_logger(__name__)
@@ -25,8 +27,8 @@ class ParentStore:
             db_path: Path to the SQLite database file.
         """
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self.db = sqlite_utils.Database(str(self.db_path))
+        # Use SQLiteManager static helper to ensure WAL and busy_timeout
+        self.db = SQLiteManager.initialize_db(self.db_path)
         
         # Initialize schema
         if "parents" not in self.db.table_names():
@@ -72,6 +74,11 @@ class ParentStore:
             logger.debug(f"Stored {len(records)} parent chunks in SQLite")
             
         return len(records)
+
+    async def async_add_parents(self, parents: List[Chunk]) -> int:
+        """Asynchronous version of add_parents."""
+        import asyncio
+        return await asyncio.to_thread(self.add_parents, parents)
 
     def get_parent_text(self, parent_id: str) -> Optional[str]:
         """Retrieve the text of a parent chunk by its ID.

@@ -124,68 +124,69 @@ def add_watermark_to_pdf(
 ) -> str:
     """为 PDF 添加水印.
     
-    将 PDF 转为图片，添加水印后再合并为 PDF。
+    使用 PyMuPDF (fitz) 在页面上直接绘制文本水印。
     
     Args:
         pdf_path: 输入 PDF 路径
         watermark_text: 水印文字
         output_path: 输出路径
-        opacity: 水印透明度
+        opacity: 水印透明度 (0-255)
         angle: 水印旋转角度
     
     Returns:
         输出文件路径
     """
     try:
-        from pdf2image import convert_from_path
+        import fitz
     except ImportError:
-        logger.error("pdf2image not installed. Run: pip install pdf2image")
-        raise ImportError("pdf2image is required for PDF watermarking")
-    
-    from PIL import Image
+        logger.error("PyMuPDF not installed. Run: pip install PyMuPDF")
+        raise ImportError("PyMuPDF is required for PDF watermarking")
     
     input_path = Path(pdf_path)
     if output_path is None:
         output_path = str(input_path.parent / f"{input_path.stem}_watermarked.pdf")
+        
+    doc = fitz.open(pdf_path)
+    alpha = opacity / 255.0
     
-    with tempfile.TemporaryDirectory() as temp_dir:
-        temp_path = Path(temp_dir)
-        
-        try:
-            images = convert_from_path(pdf_path, dpi=150)
-        except Exception as e:
-            logger.error(f"Failed to convert PDF to images: {e}")
-            logger.info("Make sure poppler is installed and in PATH")
-            raise
-        
-        watermarked_images = []
-        
-        for i, img in enumerate(images):
-            page_path = temp_path / f"page_{i}.png"
-            img.save(str(page_path), "PNG")
+    font_paths = [
+        "C:/Windows/Fonts/simhei.ttf",
+        "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simsun.ttc",
+        "/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf",
+        "/System/Library/Fonts/PingFang.ttc",
+    ]
+    fontfile = None
+    for fp in font_paths:
+        if Path(fp).exists():
+            fontfile = fp
+            break
             
-            wm_path = temp_path / f"page_{i}_wm.png"
-            add_watermark_to_image(
-                str(page_path),
-                watermark_text,
-                str(wm_path),
-                opacity,
-                angle,
-            )
-            
-            wm_img = Image.open(wm_path).convert("RGB")
-            watermarked_images.append(wm_img)
+    for page in doc:
+        rect = page.rect
         
-        if watermarked_images:
-            watermarked_images[0].save(
-                output_path,
-                save_all=True,
-                append_images=watermarked_images[1:] if len(watermarked_images) > 1 else [],
-                resolution=150,
-            )
+        tw = fitz.get_text_length(watermark_text, fontname="cjk", fontsize=36)
+        spacing_x = tw + 80
+        spacing_y = 36 * 4
         
-        logger.info(f"Watermark added to PDF: {output_path}")
-        return output_path
+        for y in range(-int(rect.height), int(rect.height * 2), int(spacing_y)):
+            for x in range(-int(rect.width), int(rect.width * 2), int(spacing_x)):
+                page.insert_text(
+                    fitz.Point(x, y),
+                    watermark_text,
+                    fontsize=36,
+                    fontname="cjk" if not fontfile else "F0",
+                    fontfile=fontfile,
+                    rotate=-angle,
+                    color=(0.5, 0.5, 0.5),
+                    fill_opacity=alpha,
+                )
+                
+    doc.save(output_path)
+    doc.close()
+    
+    logger.info(f"Watermark added to PDF: {output_path}")
+    return output_path
 
 
 def add_watermark(

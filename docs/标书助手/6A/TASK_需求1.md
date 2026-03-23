@@ -1,4 +1,4 @@
-# TASK — 需求1：产品技术资料真伪性辨别助手
+# TASK 需求1：产品技术资料真伪性辨别助手
 
 ## 任务依赖图
 
@@ -29,23 +29,23 @@ graph LR
 - **输出**：`src/bid/product_db.py`
 - **验收**：CRUD 产品参数记录，支持按 doc_type 筛选
 - **约束**：DB 文件 `data/bid_params.db`；参数含 `page`、`section` 字段
-- **状态**：⚠️ 需改造（前次实现不含 page/section 字段）
+- **状态**：✅ 已完成（重写）
 
-## T3: 参数提取器（含页码+章节）
+## T3: 参数提取器（含页码/章节）
 
 - **输入**：T2，Skill `bid-param-extractor`
 - **输出**：`src/bid/param_extractor.py`
-- **验收**：传入 chunk 文本及 chunk 元数据（页码），返回参数 JSON（含 page、section）
+- **验收**：传入 chunk 文本与 chunk 元数据（页码），返回参数 JSON（含 page、section）
 - **约束**：读取 Skill prompt 模板；prompt 需要求 LLM 输出 page 和 section
-- **状态**：⚠️ 需改造（前次实现不提取页码/章节）
+- **状态**：✅ 已完成（重写）
 
-## T4: 参数比对器（含 table_data）
+## T4: 参数比对器（带 table_data）
 
 - **输入**：T2，Skill `bid-param-comparator`
 - **输出**：`src/bid/param_comparator.py`
 - **验收**：流式输出 Markdown 偏差报告；结束时输出结构化 `table_data` JSON
 - **约束**：table_data 包含 param/official/vendor/status/risk/page/section/note
-- **状态**：⚠️ 需改造（前次实现缺少 table_data 结构化输出）
+- **状态**：✅ 已完成（重写）
 
 ## T5: 后端 API 路由
 
@@ -58,7 +58,7 @@ graph LR
   - `GET /api/bid/params` — 参数列表
   - `DELETE /api/bid/params/{id}` — 删除记录
 - **验收**：所有端点可调通，upload 支持 PDF/DOCX
-- **状态**：⚠️ 需重写（前次是表单式 API，现需支持 file upload + 对话工作流）
+- **状态**：✅ 已完成（重写）
 
 ## T6: 对话式前端页面
 
@@ -70,10 +70,10 @@ graph LR
   - 富消息类型：文本、产品卡片（可点选）、文件上传区、参数预览表、Markdown 流式、结构化表格
   - 底部输入框 + 发送按钮
 - **约束**：参考 ChatView.vue 的 UI 模式；复用设计 token
-- **状态**：❌ 需重写（前次是 Tab 表单式，不符合需求）
+- **状态**：✅ 已完成（重写）
 
 ## T7: 联调验证
 
 - **输入**：T5，T6
 - **验收**：完整走通顺序工作流（输入需求→选产品→上传→比对报告）
-- **状态**：待实施
+- **状态**：✅ 已完成

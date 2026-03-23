@@ -131,6 +131,7 @@ def list_params(
     doc_type: Optional[str] = None,
     category: Optional[str] = None,
     limit: int = 100,
+    offset: int = 0,
 ) -> List[ProductParamRecord]:
     """List product parameter records with optional filters."""
     _ensure_table()
@@ -144,8 +145,8 @@ def list_params(
         args.append(category)
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
-    sql = f"SELECT * FROM product_params {where} ORDER BY updated_at DESC LIMIT ?"
-    args.append(limit)
+    sql = f"SELECT * FROM product_params {where} ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+    args.extend([limit, offset])
 
     with _get_conn() as conn:
         rows = conn.execute(sql, args).fetchall()

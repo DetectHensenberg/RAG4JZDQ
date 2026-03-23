@@ -206,6 +206,13 @@ def _register_default_tools(protocol_handler: ProtocolHandler) -> None:
     # Import and register get_document_summary tool
     from src.mcp_server.tools.get_document_summary import register_tool as register_summary_tool
     register_summary_tool(protocol_handler)
+    
+    # Import and register feedback tools
+    from src.mcp_server.tools.submit_feedback import register_tool as register_submit_feedback
+    register_submit_feedback(protocol_handler)
+    
+    from src.mcp_server.tools.get_feedback_stats import register_tool as register_get_feedback_stats
+    register_get_feedback_stats(protocol_handler)
 
 
 def create_mcp_server(

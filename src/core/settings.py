@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -174,6 +174,18 @@ def _parse_ingestion_settings(ingestion: Dict[str, Any]) -> "IngestionSettings":
                 max_hops=gr_data.get("max_hops", 1),
             )
     
+    # Parse Redis settings (optional)
+    redis_config: Optional[RedisSettings] = None
+    redis_data = ingestion.get("redis")
+    if isinstance(redis_data, dict):
+        redis_config = RedisSettings(
+            url=redis_data.get("url", "redis://localhost:6379/0"),
+            stream_key=redis_data.get("stream_key", "rag:ingestion:tasks"),
+            consumer_group=redis_data.get("consumer_group", "rag-workers"),
+            max_retries=redis_data.get("max_retries", 3),
+            task_timeout=redis_data.get("task_timeout", 600),
+        )
+
     return IngestionSettings(
         chunk_size=_require_int(ingestion, "chunk_size", "ingestion"),
         chunk_overlap=_require_int(ingestion, "chunk_overlap", "ingestion"),
@@ -185,6 +197,8 @@ def _parse_ingestion_settings(ingestion: Dict[str, Any]) -> "IngestionSettings":
         context_enricher=context_enricher_config,
         parent_retrieval=parent_retrieval_config,
         graph_rag=graph_rag_config,
+        queue_backend=ingestion.get("queue_backend", "memory"),
+        redis=redis_config,
     )
 
 
@@ -244,6 +258,7 @@ class RetrievalSettings:
     hyde_enabled: bool = False   # HyDE (Hypothetical Document Embedding)
     parent_retrieval_mode: str = "never"
     graph_rag_mode: str = "never"
+    sparse_provider: str = "bm25"  # bm25 | tantivy
 
     @property
     def parent_retrieval_enabled(self) -> bool:
@@ -277,6 +292,24 @@ class ObservabilitySettings:
     trace_enabled: bool
     trace_file: str
     structured_logging: bool
+
+
+@dataclass(frozen=True)
+class SQLiteSettings:
+    """SQLite performance and concurrency configurations."""
+    journal_mode: str = "WAL"
+    busy_timeout: int = 20000  # ms
+    synchronous: str = "NORMAL"
+
+
+@dataclass(frozen=True)
+class RedisSettings:
+    """Redis connection and queue configurations."""
+    url: str = "redis://localhost:6379/0"
+    stream_key: str = "rag:ingestion:tasks"
+    consumer_group: str = "rag-workers"
+    max_retries: int = 3
+    task_timeout: int = 600  # seconds
 
 
 @dataclass(frozen=True)
@@ -327,6 +360,8 @@ class IngestionSettings:
     context_enricher: Optional[ContextEnricherConfig] = None  # 上下文注入配置
     parent_retrieval: Optional[ParentRetrievalConfig] = None
     graph_rag: Optional[GraphRAGConfig] = None
+    queue_backend: str = "memory"  # memory | redis
+    redis: Optional[RedisSettings] = None
 
 
 @dataclass(frozen=True)
@@ -338,6 +373,7 @@ class Settings:
     rerank: RerankSettings
     evaluation: EvaluationSettings
     observability: ObservabilitySettings
+    sqlite: SQLiteSettings = field(default_factory=SQLiteSettings)
     ingestion: Optional[IngestionSettings] = None
     vision_llm: Optional[VisionLLMSettings] = None
 
@@ -353,6 +389,15 @@ class Settings:
         rerank = _require_mapping(data, "rerank", "settings")
         evaluation = _require_mapping(data, "evaluation", "settings")
         observability = _require_mapping(data, "observability", "settings")
+
+        sqlite_settings = SQLiteSettings()
+        if "sqlite" in data:
+            sqlite_data = _require_mapping(data, "sqlite", "settings")
+            sqlite_settings = SQLiteSettings(
+                journal_mode=sqlite_data.get("journal_mode", "WAL"),
+                busy_timeout=sqlite_data.get("busy_timeout", 20000),
+                synchronous=sqlite_data.get("synchronous", "NORMAL"),
+            )
 
         ingestion_settings = None
         if "ingestion" in data:
@@ -409,6 +454,7 @@ class Settings:
                     "graph_rag_mode",
                     "graph_rag_enabled",
                 ),
+                sparse_provider=retrieval.get("sparse_provider", "bm25"),
             ),
             rerank=RerankSettings(
                 enabled=_require_bool(rerank, "enabled", "rerank"),
@@ -427,6 +473,7 @@ class Settings:
                 trace_file=_require_str(observability, "trace_file", "observability"),
                 structured_logging=_require_bool(observability, "structured_logging", "observability"),
             ),
+            sqlite=sqlite_settings,
             ingestion=ingestion_settings,
             vision_llm=vision_llm_settings,
         )

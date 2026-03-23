@@ -1,0 +1,48 @@
+2026-03-23 00:41:21,559 INFO src.ingestion.storage.feedback_store Feedback table schema initialized
+2026-03-23 00:41:21,560 INFO src.ingestion.storage.feedback_store FeedbackStore initialized at D:\WorkSpace\project\个人项目\RAG\data\db\feedback_test.db
+Traceback (most recent call last):
+  File "D:\WorkSpace\project\个人项目\RAG\concurrent_sqlite_test.py", line 34, in <module>
+    asyncio.run(test_concurrency())
+    ~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\51178\AppData\Local\Programs\Python\Python313\Lib\asyncio\runners.py", line 195, in run
+    return runner.run(main)
+           ~~~~~~~~~~^^^^^^
+  File "C:\Users\51178\AppData\Local\Programs\Python\Python313\Lib\asyncio\runners.py", line 118, in run
+    return self._loop.run_until_complete(task)
+           ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^
+  File "C:\Users\51178\AppData\Local\Programs\Python\Python313\Lib\asyncio\base_events.py", line 725, in run_until_complete
+    return future.result()
+           ~~~~~~~~~~~~~^^
+  File "D:\WorkSpace\project\个人项目\RAG\concurrent_sqlite_test.py", line 30, in test_concurrency
+    await asyncio.gather(*[write_op(i) for i in range(5)])
+  File "D:\WorkSpace\project\个人项目\RAG\concurrent_sqlite_test.py", line 23, in write_op
+    await store.async_upsert_feedback(f"trace_{i}", 1, f"comment_{i}")
+  File "D:\WorkSpace\project\个人项目\RAG\src\ingestion\storage\feedback_store.py", line 88, in async_upsert_feedback
+    await asyncio.to_thread(
+        self.upsert_feedback, trace_id, rating, comment, query
+    )
+  File "C:\Users\51178\AppData\Local\Programs\Python\Python313\Lib\asyncio\threads.py", line 25, in to_thread
+    return await loop.run_in_executor(None, func_call)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\51178\AppData\Local\Programs\Python\Python313\Lib\concurrent\futures\thread.py", line 59, in run
+    result = self.fn(*self.args, **self.kwargs)
+  File "D:\WorkSpace\project\个人项目\RAG\src\ingestion\storage\feedback_store.py", line 76, in upsert_feedback
+    self.db["feedback"].upsert(data, pk="trace_id", alter=True)
+    ~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\51178\AppData\Local\Programs\Python\Python313\Lib\site-packages\sqlite_utils\db.py", line 432, in __getitem__
+    return self.table(table_name)
+           ~~~~~~~~~~^^^^^^^^^^^^
+  File "C:\Users\51178\AppData\Local\Programs\Python\Python313\Lib\site-packages\sqlite_utils\db.py", line 562, in table
+    if table_name in self.view_names():
+                     ~~~~~~~~~~~~~~~^^
+  File "C:\Users\51178\AppData\Local\Programs\Python\Python313\Lib\site-packages\sqlite_utils\db.py", line 642, in view_names
+    for r in self.execute(
+             ~~~~~~~~~~~~^
+        "select name from sqlite_master where type = 'view'"
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    ).fetchall()
+    ^
+  File "C:\Users\51178\AppData\Local\Programs\Python\Python313\Lib\site-packages\sqlite_utils\db.py", line 542, in execute
+    return self.conn.execute(sql)
+           ~~~~~~~~~~~~~~~~~^^^^^
+sqlite3.ProgrammingError: SQLite objects created in a thread can only be used in that same thread. The object was created in thread id 49520 and this is thread id 71532.

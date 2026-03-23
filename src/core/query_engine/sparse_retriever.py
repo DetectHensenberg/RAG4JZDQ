@@ -299,15 +299,14 @@ def create_sparse_retriever(
 ) -> SparseRetriever:
     """Factory function to create a SparseRetriever with optional dependency injection.
     
-    This function simplifies SparseRetriever creation by automatically creating
-    dependencies from factories if not provided.
+    Supports two sparse indexer backends based on ``settings.retrieval.sparse_provider``:
+    - ``"bm25"`` (default): Python BM25Indexer with Pickle storage.
+    - ``"tantivy"``: Rust Tantivy engine with Mmap disk indexing.
     
     Args:
         settings: Application settings.
-        bm25_indexer: Optional pre-configured BM25 indexer.
-                      If None, created with default index_dir.
+        bm25_indexer: Optional pre-configured indexer (overrides provider selection).
         vector_store: Optional pre-configured vector store.
-                      If None, created from VectorStoreFactory.
         index_dir: Directory for BM25 index files (default: "data/db/bm25").
     
     Returns:
@@ -317,10 +316,23 @@ def create_sparse_retriever(
         >>> settings = Settings.load('config/settings.yaml')
         >>> retriever = create_sparse_retriever(settings)
     """
-    # Lazy import to avoid circular dependencies
+    # Determine sparse provider from settings
+    sparse_provider = getattr(
+        getattr(settings, "retrieval", None),
+        "sparse_provider",
+        "bm25",
+    )
+
     if bm25_indexer is None:
-        from src.ingestion.storage.bm25_indexer import BM25Indexer
-        bm25_indexer = BM25Indexer(index_dir=index_dir)
+        if sparse_provider == "tantivy":
+            from src.ingestion.storage.tantivy_indexer import TantivyIndexer
+            tantivy_dir = index_dir.replace("bm25", "tantivy")
+            bm25_indexer = TantivyIndexer(index_dir=tantivy_dir)
+            logger.info(f"SparseRetriever: Using TantivyIndexer (dir={tantivy_dir})")
+        else:
+            from src.ingestion.storage.bm25_indexer import BM25Indexer
+            bm25_indexer = BM25Indexer(index_dir=index_dir)
+            logger.info(f"SparseRetriever: Using BM25Indexer (dir={index_dir})")
     
     if vector_store is None:
         from src.libs.vector_store.vector_store_factory import VectorStoreFactory
@@ -331,3 +343,4 @@ def create_sparse_retriever(
         bm25_indexer=bm25_indexer,
         vector_store=vector_store,
     )
+
