@@ -1,48 +1,50 @@
-# 九洲 RAG 管理平台 - Configuration Template
-# 复制此文件为 settings.yaml 并填入实际配置
-# cp config/settings.yaml.example config/settings.yaml
+# 九洲 RAG 管理平台 - 配置模板
+# 使用说明：
+#   1. 复制本文件为 settings.yaml:  cp settings.yaml.example settings.yaml
+#   2. 按需修改下方配置
+#   3. API Key 统一在 .env 文件中配置，此处留空即可
 
 # =============================================================================
 # LLM Configuration
 # =============================================================================
 llm:
-  provider: "openai"  # Using DashScope OpenAI-compatible API for Qwen
-  model: "qwen-plus"
-  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  api_key: ""  # 从环境变量 DASHSCOPE_API_KEY 自动读取，或在此填入
+  provider: "openai"  # 使用 DashScope 兼容 OpenAI 接口
+  model: "qwen3.5-plus"
+  base_url: "https://coding.dashscope.aliyuncs.com/v1"
+  api_key: ""  # 从环境变量 DASHSCOPE_API_KEY 自动读取
   temperature: 0.0
   max_tokens: 4096
-  proxy: ""  # 本地代理，留空则不使用代理
+  proxy: ""  # 本地代理，留空则不使用
 
 # =============================================================================
 # Embedding Configuration
 # =============================================================================
 embedding:
-  provider: "openai"  # Using DashScope OpenAI-compatible API for Qwen embedding
+  provider: "openai"
   model: "text-embedding-v3"
-  dimensions: 1024  # DashScope text-embedding-v3 默认 1024 维
+  dimensions: 1024
   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  api_key: ""  # 从环境变量 DASHSCOPE_API_KEY 自动读取，或在此填入
+  api_key: ""  # 从环境变量 DASHSCOPE_API_KEY 自动读取
 
 # =============================================================================
 # Vision LLM Configuration (for Image Captioning)
 # =============================================================================
 vision_llm:
-  enabled: true  # Enable vision capabilities for scanned PDF/PPTX processing
-  provider: "openai"  # Using DashScope OpenAI-compatible API for Qwen VL
-  model: "qwen-vl-plus"  # Qwen 视觉模型
-  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  api_key: ""  # 从环境变量 DASHSCOPE_API_KEY 自动读取，或在此填入
-  max_image_size: 2048  # Max dimension (width/height) for image compression
-  proxy: ""  # 本地代理，留空则不使用代理
+  enabled: true
+  provider: "openai"
+  model: "qwen3.5-plus"
+  base_url: "https://coding.dashscope.aliyuncs.com/v1"
+  api_key: ""  # 从环境变量 DASHSCOPE_API_KEY 自动读取
+  max_image_size: 2048
+  proxy: ""
 
 # =============================================================================
 # Vector Store Configuration
 # =============================================================================
 vector_store:
-  provider: "chroma"  # Options: chroma, qdrant, pinecone
+  provider: "chroma"
   persist_directory: "./data/db/chroma"
-  collection_name: "knowledge_hub"
+  collection_name: "default"
 
 # =============================================================================
 # Retrieval Configuration
@@ -51,15 +53,20 @@ retrieval:
   dense_top_k: 20
   sparse_top_k: 20
   fusion_top_k: 10
-  rrf_k: 60  # RRF constant
+  rrf_k: 60
+  query_rewrite: false
+  hyde_enabled: false
+  parent_retrieval_mode: "auto"
+  graph_rag_mode: "auto"
+  enable_suggested_questions: true
 
 # =============================================================================
 # Rerank Configuration
 # =============================================================================
 rerank:
-  enabled: false
-  provider: "none"  # Options: none, cross_encoder, llm
-  model: "cross-encoder/ms-marco-MiniLM-L-6-v2"
+  enabled: true
+  provider: "cross_encoder"
+  model: "BAAI/bge-reranker-base"
   top_k: 5
 
 # =============================================================================
@@ -67,7 +74,7 @@ rerank:
 # =============================================================================
 evaluation:
   enabled: false
-  provider: "custom"  # Options: ragas, deepeval, custom
+  provider: "custom"
   metrics:
     - "hit_rate"
     - "mrr"
@@ -77,7 +84,7 @@ evaluation:
 # Observability Configuration
 # =============================================================================
 observability:
-  log_level: "INFO"  # Options: DEBUG, INFO, WARNING, ERROR
+  log_level: "INFO"
   trace_enabled: true
   trace_file: "./logs/traces.jsonl"
   structured_logging: true
@@ -86,17 +93,17 @@ observability:
 # Ingestion Configuration
 # =============================================================================
 ingestion:
-  chunk_size: 1000
-  chunk_overlap: 200
-  splitter: "recursive"  # Options: recursive, semantic, fixed_length
+  chunk_size: 1500
+  chunk_overlap: 300
+  splitter: "structure"
   batch_size: 100
-  
-  # Chunk Refiner Configuration (C5)
+  pdf_parser: "layout"
+
   chunk_refiner:
-    use_llm: false  # Set to true to enable LLM-based refinement (requires LLM config)
-    # When use_llm is false or LLM call fails, falls back to rule-based refinement
-  
-  # Metadata Enricher Configuration (C6)
+    use_llm: false
+
   metadata_enricher:
-    use_llm: false  # Set to true to enable LLM-based enrichment (requires LLM config)
-    # When use_llm is false or LLM call fails, falls back to rule-based enrichment
+    use_llm: false
+
+  context_enricher:
+    enabled: true

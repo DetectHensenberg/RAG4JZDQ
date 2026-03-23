@@ -138,26 +138,27 @@ class LayoutPdfLoader(BaseLoader):
             page_text, is_scanned, is_multi_col = self._extract_page_layout(
                 page, page_num, pdf_doc, doc_hash
             )
+            
+            # Extract image for this page if it contains visual elements
+            if self.extract_images:
+                try:
+                    page_images = self._extract_page_image(page, page_num, doc_hash)
+                    if page_images:
+                        for img in page_images:
+                            page_text += f"\n\n[IMAGE: {img['id']}]\n"
+                        images_metadata.extend(page_images)
+                except Exception as e:
+                    logger.warning(f"Image extraction failed for page {page_num + 1}: {e}")
+                    
             all_page_texts.append(page_text)
             if is_scanned:
                 scanned_pages.append(page_num + 1)
             if is_multi_col:
                 multi_col_pages.append(page_num + 1)
 
-        # Extract images if enabled
-        if self.extract_images:
-            try:
-                images_metadata = self._extract_images(pdf_doc, doc_hash)
-            except Exception as e:
-                logger.warning(f"Image extraction failed: {e}")
-
         pdf_doc.close()
 
         text_content = "\n\n".join(all_page_texts)
-
-        # Append image placeholders
-        for img in images_metadata:
-            text_content += f"\n[IMAGE: {img['id']}]\n"
 
         metadata: Dict[str, Any] = {
             "source_path": str(path),
@@ -410,58 +411,75 @@ class LayoutPdfLoader(BaseLoader):
             return f"[OCR FAILED PAGE {page_num + 1}]"
 
     # ------------------------------------------------------------------
-    # Image extraction (reuse PyMuPDF approach from PdfLoader)
+    # Image extraction (Full page rendering)
     # ------------------------------------------------------------------
 
-    def _extract_images(
-        self, pdf_doc: Any, doc_hash: str
+    # Render DPI for full-page images (150 = good balance of quality vs size)
+    RENDER_DPI = 150
+    # Maximum pixel dimension (longest side).
+    MAX_RENDER_DIM = 2000
+    # Minimum number of embedded images on a page to trigger rendering.
+    MIN_IMAGES_FOR_RENDER = 1
+
+    def _extract_page_image(
+        self, page: Any, page_num: int, doc_hash: str
     ) -> List[Dict[str, Any]]:
-        """Extract images from PDF and save to disk."""
-        images_metadata: List[Dict[str, Any]] = []
+        """Render a PDF page containing images as a high-quality PNG.
+        
+        Instead of extracting fragmented internal images (icons, backgrounds),
+        this renders the entire page if it contains any visual elements.
+        """
+        # Only render pages that contain visual content
+        if len(page.get_images(full=True)) < self.MIN_IMAGES_FOR_RENDER:
+            return []
+
         image_dir = self.image_storage_dir / doc_hash
         image_dir.mkdir(parents=True, exist_ok=True)
+        
+        base_scale = self.RENDER_DPI / 72
+        
+        # Dynamically reduce DPI if page would exceed MAX_RENDER_DIM
+        rect = page.rect
+        max_side = max(rect.width * base_scale, rect.height * base_scale)
+        if max_side > self.MAX_RENDER_DIM:
+            scale = self.MAX_RENDER_DIM / max(rect.width, rect.height) / (72 / 72)
+            mat = fitz.Matrix(scale, scale)
+        else:
+            mat = fitz.Matrix(base_scale, base_scale)
 
-        for page_num in range(len(pdf_doc)):
-            page = pdf_doc[page_num]
-            image_list = page.get_images(full=True)
+        pix = page.get_pixmap(matrix=mat, alpha=False)
+        slide_num = page_num + 1
 
-            for img_index, img_info in enumerate(image_list):
-                try:
-                    xref = img_info[0]
-                    base_image = pdf_doc.extract_image(xref)
-                    image_bytes = base_image["image"]
-                    image_ext = base_image["ext"]
+        image_id = f"{doc_hash[:8]}_{slide_num}_1"
+        image_filename = f"{image_id}.png"
+        image_path = image_dir / image_filename
 
-                    image_id = f"{doc_hash[:8]}_{page_num + 1}_{img_index + 1}"
-                    image_filename = f"{image_id}.{image_ext}"
-                    image_path = image_dir / image_filename
+        pix.save(str(image_path))
 
-                    with open(image_path, "wb") as f:
-                        f.write(image_bytes)
+        width, height = pix.width, pix.height
+        placeholder_len = len(f"[IMAGE: {image_id}]")
+        
+        try:
+            relative_path = image_path.relative_to(Path.cwd())
+        except ValueError:
+            relative_path = image_path.absolute()
 
-                    try:
-                        img = Image.open(io.BytesIO(image_bytes))
-                        width, height = img.size
-                    except Exception:
-                        width, height = 0, 0
+        logger.debug(f"Rendered page {slide_num} as {image_id} ({width}x{height})")
 
-                    images_metadata.append({
-                        "id": image_id,
-                        "path": str(image_path),
-                        "page": page_num + 1,
-                        "position": {
-                            "width": width,
-                            "height": height,
-                            "page": page_num + 1,
-                            "index": img_index,
-                        },
-                    })
-                except Exception as e:
-                    logger.warning(
-                        f"Failed to extract image {img_index} from page {page_num + 1}: {e}"
-                    )
-
-        return images_metadata
+        return [{
+            "id": image_id,
+            "path": str(relative_path),
+            "page": slide_num,
+            "text_offset": 0,
+            "text_length": placeholder_len,
+            "position": {
+                "width": width,
+                "height": height,
+                "page": slide_num,
+                "index": 1,
+            },
+            "render_method": "page_pixmap",
+        }]
 
     # ------------------------------------------------------------------
     # Utilities

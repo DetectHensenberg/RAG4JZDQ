@@ -98,6 +98,16 @@ class BaseLLM(ABC):
         """
         response = self.chat(messages, trace=trace, **kwargs)
         yield response.content
+
+    async def achat_stream(
+        self,
+        messages: List[Message],
+        trace: Optional[Any] = None,
+        **kwargs: Any,
+    ):
+        """Asynchronous stream chat completion."""
+        response = self.chat(messages, trace=trace, **kwargs)
+        yield response.content
     
     def validate_messages(self, messages: List[Message]) -> None:
         """Validate message list structure.

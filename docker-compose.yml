@@ -1,0 +1,38 @@
+# ============================================================
+# 九洲 RAG 管理平台 — Docker Compose 编排
+#
+# 启动方式:
+#   1. cp .env.example .env && 编辑 .env 填入 API Key
+#   2. cp config/settings.yaml.example config/settings.yaml
+#   3. docker compose up -d
+#
+# 数据持久化: ./data/ 目录自动挂载
+# ============================================================
+
+services:
+  rag:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: jiuzhou-rag
+    restart: unless-stopped
+    ports:
+      - "${RAG_PORT:-8000}:8000"
+    volumes:
+      # 数据持久化（ChromaDB、SQLite、图片、导出文件）
+      - ./data:/app/data
+      # 配置文件挂载（允许运行时修改）
+      - ./config/settings.yaml:/app/config/settings.yaml:ro
+      # 日志
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - CORS_ORIGINS=http://localhost:${RAG_PORT:-8000}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s

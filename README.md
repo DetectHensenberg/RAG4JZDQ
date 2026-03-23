@@ -26,20 +26,21 @@
 
 ### 技术栈
 
-| 组件 | 技术选型 |
-|------|----------|
-| **后端** | FastAPI + Uvicorn |
-| **前端** | Vue 3 + Vite + TypeScript + Element Plus + TailwindCSS |
-| **LLM** | DashScope (qwen-plus) / OpenAI / Azure / DeepSeek / Ollama |
-| **Embedding** | DashScope (text-embedding-v3) / OpenAI / Azure / Ollama |
-| **Vision LLM** | DashScope (qwen-vl-plus) / OpenAI / Azure（图片描述生成） |
-| **向量数据库** | ChromaDB（本地持久化，WAL 模式） |
-| **稀疏检索** | BM25（jieba 中文分词 + 自研倒排索引） |
-| **重排序** | BGE-Reranker（本地 Cross-Encoder）/ LLM Rerank |
-| **文档解析** | MarkItDown + LayoutPDF（OCR）+ python-pptx |
-| **MCP 协议** | 官方 Python MCP SDK（stdio 传输） |
-| **配置管理** | YAML + .env 环境变量 |
-| **测试** | pytest（三层测试体系） |
+| 组件                 | 技术选型                                                   |
+| -------------------- | ---------------------------------------------------------- |
+| **后端**       | FastAPI + Uvicorn                                          |
+| **前端**       | Vue 3 + Vite + TypeScript + Element Plus + TailwindCSS     |
+| **LLM**        | DashScope (qwen-plus) / OpenAI / Azure / DeepSeek / Ollama |
+| **Embedding**  | DashScope (text-embedding-v3) / OpenAI / Azure / Ollama    |
+| **Vision LLM** | DashScope (qwen-vl-plus) / OpenAI / Azure（图片描述生成）  |
+| **向量数据库** | ChromaDB（本地持久化，WAL 模式）                           |
+| **稀疏检索**   | **Tantivy** 高性能文本索引基座（替代传统 BM25）      |
+| **重排序**     | BGE-Reranker（本地 Cross-Encoder）/ LLM Rerank             |
+| **异步队列**   | Redis / Memory Queue（海量文档吞吐缓冲层）                 |
+| **文档解析**   | MarkItDown + LayoutPDF（OCR）+ python-pptx                 |
+| **MCP 协议**   | 官方 Python MCP SDK（stdio 传输）                          |
+| **配置管理**   | YAML + .env 环境变量                                       |
+| **测试**       | pytest（三层测试体系）                                     |
 
 ---
 
@@ -97,21 +98,28 @@
 
 ### 文档摄取管道（Ingestion Pipeline）
 
-6 阶段全自动摄取流程：
+基于消息队列（Redis/Memory）的分发式异步摄取流程：
 
-1. **文件完整性检查** — SHA256 哈希去重，相同文件自动跳过
-2. **文档加载** — 支持 PDF / PPTX / DOCX / MD / TXT，自动提取图片
-3. **智能分块** — 递归文本分割，保持语义完整性
-4. **内容增强** — Chunk 精炼 + 元数据增强 + Vision LLM 图片描述
-5. **向量编码** — Dense Embedding + BM25 稀疏编码，批量处理
-6. **持久化存储** — ChromaDB 向量存储 + BM25 倒排索引 + 图片索引
+1. **分布式投递** — 基于异步队列机制管理摄取任务，提升系统的并发承载稳定性。
+2. **文件完整性检查** — SHA256 哈希去重，相同文件无缝熔断。
+3. **文档加载** — 支持 PDF / PPTX / DOCX / MD / TXT，自动提取流式图文内容。
+4. **智能分块与内容增强** — 递归文本分割，并引入 Chunk 精炼、元数据增强与 Vision LLM 图片描述补充。
+5. **异步向量化** — Dense Embedding + Sparse Tantivy 高性能编码处理。
+6. **双路落盘存储** — ChromaDB 持久化向量空间 + Tantivy 本地域倒排索引合并落盘。
 
 ### 混合检索引擎（Hybrid Search）
 
-- **Dense Retrieval** — 语义向量相似度检索
-- **Sparse Retrieval** — BM25 关键词精确匹配（jieba 中文分词）
-- **RRF Fusion** — Reciprocal Rank Fusion 合并双路召回结果
-- **可选 Rerank** — Cross-Encoder / LLM 重排序精排
+- **Dense Retrieval** — 语义向量相似度检索。
+- **Sparse Retrieval** — Tantivy 高效倒排检索体系，提供亿级数据下毫秒级的关键词精确召回响应。
+- **RRF Fusion** — Reciprocal Rank Fusion 合并双路召回结果。
+- **可选 Rerank** — Cross-Encoder / LLM 重排序完成最后一公里精排。
+
+### 🤖 自动化工作流与 AI Agent (Antigravity & ECC)
+
+本平台不仅拥有完善的业务功能，更内置了以 AI 自动化协同规范 为核心的“自演进工作流”，全面接入了跨项目 Agent 底座：
+
+- **6A 工程协作受控 (6A Workflow)**：贯彻落实 Align -> Architect -> Atomize -> Approve -> Automate -> Assess 的智能生成与代码流转机制。所有技术方案文档化，于 `docs/` 进行全生命周期追溯。
+- **白名单能力层挂载 (.agents/skills)**：内置项目级私有能力库（譬如 `qa-tester` 自动化测试闭环, `search-first` 工程化排查策略，以及 `python-patterns` 语法底线），确保持续工程迭代中的代码质量完全不劣化甚至反向赋能人类。
 
 ### 知识库问答
 
@@ -126,11 +134,11 @@
 
 通过标准 MCP 协议暴露 3 个工具，可对接 GitHub Copilot / Claude Desktop 等 AI 助手：
 
-| 工具 | 说明 |
-|------|------|
-| `query_knowledge_hub` | 混合检索知识库并返回相关文档片段 |
-| `list_collections` | 列出所有已建集合及统计信息 |
-| `get_document_summary` | 获取指定文档的摘要和元数据 |
+| 工具                     | 说明                             |
+| ------------------------ | -------------------------------- |
+| `query_knowledge_hub`  | 混合检索知识库并返回相关文档片段 |
+| `list_collections`     | 列出所有已建集合及统计信息       |
+| `get_document_summary` | 获取指定文档的摘要和元数据       |
 
 ### 可观测性
 
@@ -146,42 +154,40 @@
 
 - Python 3.10+
 - Node.js 18+（前端构建）
-- **已内置 DashScope API Key，无需额外配置！**
+- DashScope API Key（[申请地址](https://dashscope.console.aliyun.com/)）
 
-### 2. 安装依赖
+### 2. 一键安装
 
 ```bash
 git clone <repo-url>
 cd RAG
 
-# 安装所有 Python 依赖（包含 PDF/PPTX 解析、重排序等）
-pip install -e .
+# Windows
+setup.bat
 
-# 安装前端依赖（首次运行）
-cd web && npm install && cd ..
+# Linux / Mac
+chmod +x setup.sh && ./setup.sh
 ```
 
-> **注意**：OCR 功能需要安装 Tesseract 二进制程序
-> - Windows: 下载安装 [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki)（安装时勾选中文语言包）
-> - 默认路径: `C:\Program Files\Tesseract-OCR\tesseract.exe`
+安装脚本会自动完成：创建虚拟环境 → 安装依赖 → 生成配置文件 → 构建前端。
 
-### 3. 一键启动
+> **首次安装后**：打开 `.env` 文件，将 `your-dashscope-api-key-here` 替换为你的 API Key。
+
+> **OCR 功能**（可选）需额外安装 [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki)（安装时勾选中文语言包）。
+
+### 3. 启动平台
 
 ```bash
-# Windows — 同时启动前后端
-start_vue.bat
+# 生产模式（推荐，需先 cd web && npm run build）
+start_vue.bat          # Windows
+./start_vue.sh         # Linux / Mac
+# 访问 http://localhost:8000
 
-# 或分别启动：
-# 后端 (端口 8001)
-python -m uvicorn api.main:app --port 8001
-
-# 前端开发模式 (端口 5173)
-cd web && npm run dev
+# 开发模式（前后端分离）
+# 后端: python -m uvicorn api.main:app --port 8001
+# 前端: cd web && npm run dev
+# 访问 http://localhost:5173
 ```
-
-访问地址：
-- **前端界面**: `http://localhost:5173`
-- **API 文档**: `http://localhost:8001/api/docs`
 
 ### 4. 使用 MCP Server（可选）
 
@@ -190,6 +196,23 @@ python main.py
 ```
 
 可对接 VS Code Copilot / Claude Desktop 等 AI 助手。
+
+### 5. Docker 部署（可选）
+
+```bash
+# 1. 准备配置
+cp .env.example .env                          # 编辑 .env 填入 API Key
+cp config/settings.yaml.example config/settings.yaml  # 按需修改配置
+
+# 2. 一键启动
+docker compose up -d
+
+# 3. 访问
+# http://localhost:8000
+```
+
+> **数据持久化**：`./data/` 目录通过 volume 自动挂载，容器重建不丢数据。
+> **自定义端口**：修改 `.env` 中的 `RAG_PORT=8000` 即可。
 
 ---
 
@@ -322,17 +345,19 @@ ingestion:
 │   └── package.json
 ├── config/
 │   └── settings.yaml           # 运行配置
+├── .agents/                    # 🤖 存放 Agent 白名单专属能力库 (ECC/Skills)
 ├── src/
 │   ├── core/                   # 核心层
 │   │   ├── types.py            # 全局数据契约
 │   │   ├── settings.py         # 配置加载
-│   │   └── query_engine/       # 混合检索引擎
-│   ├── ingestion/              # 摄取管道 (6 阶段)
-│   │   ├── pipeline.py         # 编排器
-│   │   ├── chunking/           # 文档分块
-│   │   ├── embedding/          # Dense + Sparse 编码
-│   │   ├── storage/            # ChromaDB + BM25 存储
-│   │   └── transform/          # Chunk 精炼 + 图片描述
+│   │   └── query_engine/       # Dense / Sparse Tantivy 混合检索
+│   ├── ingestion/              # 摄取管道
+│   │   ├── pipeline.py         # 队列编排器
+│   │   ├── queue/              # 消息缓冲队列池 (Memory/Redis)
+│   │   ├── chunking/           # Doc 分块拆解
+│   │   ├── embedding/          # Dense + Sparse Tantivy 编码
+│   │   ├── storage/            # ChromaDB + Tantivy 落盘
+│   │   └── transform/          # 内容精炼与增强
 │   ├── libs/                   # 可插拔 Provider 层
 │   │   ├── llm/                # LLM 工厂
 │   │   ├── embedding/          # Embedding 工厂

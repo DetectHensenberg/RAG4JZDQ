@@ -58,7 +58,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.exceptions import register_exception_handlers
-from api.routers import chat, knowledge, config, data, system, ingest, evaluation, export, plantuml, query, data_manage, file_dialog, bid, bid_achievement, bid_review, bid_document
+from api.routers import chat, knowledge, config, data, system, ingest, evaluation, export, plantuml, query, data_manage, file_dialog, bid, bid_achievement, bid_review, bid_document, solution
 from api.security import verify_api_key
 
 logger = logging.getLogger(__name__)
@@ -104,6 +104,7 @@ app.include_router(bid.router, prefix="/api/bid", tags=["标书助手"])
 app.include_router(bid_achievement.router, prefix="/api/bid-achievement", tags=["业绩管理"])
 app.include_router(bid_review.router, prefix="/api/bid-review", tags=["标书审查"])
 app.include_router(bid_document.router, prefix="/api/bid-document", tags=["商务文件"])
+app.include_router(solution.router, prefix="/api/solution", tags=["方案助手"])
 
 
 @app.on_event("startup")

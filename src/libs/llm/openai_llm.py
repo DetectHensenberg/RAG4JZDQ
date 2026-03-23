@@ -252,6 +252,67 @@ class OpenAILLM(BaseLLM):
             raise OpenAILLMError(
                 f"[LLM:{self.model}] Stream connection failed: {type(e).__name__}: {e}"
             ) from e
+
+    async def achat_stream(
+        self,
+        messages: List[Message],
+        trace: Optional[Any] = None,
+        **kwargs: Any,
+    ):
+        """Asynchronous version of chat_stream."""
+        self.validate_messages(messages)
+        
+        temperature = kwargs.get("temperature", self.default_temperature)
+        max_tokens = kwargs.get("max_tokens", self.default_max_tokens)
+        model = kwargs.get("model", self.model)
+        
+        api_messages = [{"role": m.role, "content": m.content} for m in messages]
+        
+        url = f"{self.base_url.rstrip('/')}/chat/completions"
+        if self.api_version:
+            url += f"?api-version={self.api_version}"
+        
+        if self._use_azure_auth:
+            headers = {"api-key": self.api_key, "Content-Type": "application/json"}
+        else:
+            headers = {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"}
+        
+        payload = {
+            "model": model,
+            "messages": api_messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "stream": True,
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=120.0) as client:
+                async with client.stream("POST", url, json=payload, headers=headers) as response:
+                    if response.status_code != 200:
+                        await response.aread()
+                        raise OpenAILLMError(
+                            f"[LLM:{self.model}] Async Stream API error (HTTP {response.status_code}): {response.text}"
+                        )
+                    
+                    async for line in response.aiter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data = line[6:]
+                        if data.strip() == "[DONE]":
+                            break
+                        try:
+                            import json
+                            chunk = json.loads(data)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content", "")
+                            if content:
+                                yield content
+                        except (json.JSONDecodeError, IndexError, KeyError):
+                            continue
+        except httpx.TimeoutException as e:
+            raise OpenAILLMError(f"[LLM:{self.model}] Async Stream timeout") from e
+        except httpx.RequestError as e:
+            raise OpenAILLMError(f"[LLM:{self.model}] Async Stream connection failed: {e}") from e
     
     def _call_api(
         self,

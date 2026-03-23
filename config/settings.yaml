@@ -22,7 +22,7 @@ embedding:
   model: "text-embedding-v3"
   dimensions: 1024  # DashScope text-embedding-v3 默认 1024 维
   base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
-  api_key: "sk-02c170ed9467429f8834a3f743b4f215"  # coding endpoint 不支持 embedding，用常规 key
+  api_key: ""  # 从环境变量 DASHSCOPE_API_KEY 自动读取
 
 # =============================================================================
 # Vision LLM Configuration (for Image Captioning)

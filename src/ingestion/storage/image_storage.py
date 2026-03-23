@@ -85,7 +85,7 @@ class ImageStorage:
     
     def close(self) -> None:
         """Close database connection if open."""
-        if self._conn:
+        if getattr(self, '_conn', None):
             self._conn.close()
             self._conn = None
     

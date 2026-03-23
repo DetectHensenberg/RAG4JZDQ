@@ -141,11 +141,12 @@ def _run_ingestion_worker(task_id: str, task: Dict[str, Any]) -> None:
                         file_meta["product_vendor"] = inf_vendor
                     if inf_model and not file_meta.get("product_model"):
                         file_meta["product_model"] = inf_model
-                result = pipeline.run(
+                import asyncio
+                result = asyncio.run(pipeline.run(
                     file_path=fpath,
                     original_filename=fname,
                     extra_metadata=file_meta if file_meta else None,
-                )
+                ))
                 if result.stages.get("integrity", {}).get("skipped"):
                     results["skipped"] += 1
                     event_queue.put({"type": "file_done", "file": fname, "status": "skipped"})

@@ -16,6 +16,12 @@ const router = createRouter({
       meta: { title: '标书助手', icon: 'Document' },
     },
     {
+      path: '/solution',
+      name: 'solution',
+      component: () => import('@/views/SolutionAssistant.vue'),
+      meta: { title: '方案助手', icon: 'EditPen' },
+    },
+    {
       path: '/knowledge',
       name: 'knowledge',
       component: () => import('@/views/KnowledgeBase.vue'),

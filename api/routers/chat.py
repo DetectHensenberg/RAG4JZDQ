@@ -21,7 +21,10 @@ from src.core.settings import resolve_path
 from src.core.query_engine.answer_cache import get_answer_cache
 from src.core.response.multimodal_assembler import MultimodalAssembler
 from src.ingestion.storage.image_storage import ImageStorage
+from src.libs.llm.base_llm import Message
 
+logger = logging.getLogger(__name__)
+router = APIRouter()
 
 # Constants
 # Image relevance threshold (0.0 - 1.0)
@@ -345,7 +348,7 @@ async def chat_stream(req: ChatRequest):
         try:
             t1 = time.perf_counter()
             llm = get_llm()
-            for chunk in llm.chat_stream(messages, max_tokens=req.max_tokens):
+            async for chunk in llm.achat_stream(messages, max_tokens=req.max_tokens):
                 full_answer += chunk
                 yield f"data: {json.dumps({'type': 'token', 'content': chunk}, ensure_ascii=False)}\n\n"
                 

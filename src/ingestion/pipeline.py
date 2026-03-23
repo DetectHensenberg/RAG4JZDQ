@@ -202,7 +202,7 @@ class IngestionPipeline:
         
         self.image_storage = ImageStorage(
             db_path=str(resolve_path("data/db/image_index.db")),
-            image_dir=str(resolve_path(f"data/images/{collection}")),
+            images_root=str(resolve_path("data/images")),
         )
         logger.info(f"  ✓ ImageStorage initialized")
 

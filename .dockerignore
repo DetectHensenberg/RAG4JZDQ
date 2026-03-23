@@ -1,0 +1,39 @@
+# ── Runtime & build artifacts ────────────────────────────
+__pycache__
+*.pyc
+*.pyo
+.venv
+venv
+.env
+*.egg-info
+dist
+build
+
+# ── IDE / editor ─────────────────────────────────────────
+.vscode
+.idea
+*.swp
+*.swo
+.gemini
+.agents
+
+# ── Git ──────────────────────────────────────────────────
+.git
+.gitignore
+
+# ── Frontend node_modules (rebuilt in Docker) ────────────
+web/node_modules
+
+# ── Data & logs (mounted as volumes, not baked in) ───────
+data/
+logs/
+*.log
+
+# ── Test & docs ──────────────────────────────────────────
+test_data/
+tests/
+docs/
+
+# ── OS files ─────────────────────────────────────────────
+Thumbs.db
+.DS_Store
