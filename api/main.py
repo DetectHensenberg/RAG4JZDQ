@@ -10,6 +10,7 @@ import logging
 import mimetypes
 import os
 import sys
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 mimetypes.add_type("application/javascript", ".js")
@@ -58,10 +59,59 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from api.exceptions import register_exception_handlers
-from api.routers import chat, knowledge, config, data, system, ingest, evaluation, export, plantuml, query, data_manage, file_dialog, bid, bid_achievement, bid_review, bid_document, solution
+from api.routers import chat, knowledge, config, data, system, ingest, evaluation, export, plantuml, query, data_manage, file_dialog, bid, bid_achievement, bid_review, bid_document, solution, material
 from api.security import verify_api_key
 
 logger = logging.getLogger(__name__)
+
+
+@asynccontextmanager
+async def lifespan(app_instance: FastAPI):
+    """Application lifespan handler: startup warmup and shutdown cleanup."""
+    # ── Startup ──
+    import time
+    start = time.time()
+
+    # Initialize SQLModel tables
+    try:
+        from src.repositories.database import init_db
+        init_db()
+        logger.info("SQLModel database tables initialized")
+    except Exception as e:
+        logger.error(f"SQLModel init failed: {e}")
+
+    try:
+        from api.deps import get_hybrid_search
+
+        hybrid = get_hybrid_search("default")
+        logger.info("ChromaStore initialized, HNSW backup completed")
+
+        # Warm up HNSW index
+        try:
+            dense = hybrid.dense_retriever
+            if dense and dense.vector_store:
+                store = dense.vector_store
+                dim = getattr(store, 'dimension', 1024)
+                dummy_vector = [0.0] * dim
+                store.query(dummy_vector, top_k=1)
+                logger.info(f"HNSW index warmed up (dim={dim})")
+        except Exception as e:
+            logger.debug(f"HNSW warmup skipped: {e}")
+
+        elapsed = time.time() - start
+        logger.info(f"Total warmup time: {elapsed:.2f}s")
+    except Exception as e:
+        logger.error(f"ChromaStore init failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+    yield
+
+    # ── Shutdown ──
+    from api.deps import shutdown_stores
+    shutdown_stores()
+    logger.info("Application shutdown: all stores closed")
+
 
 app = FastAPI(
     title="九洲 RAG 管理平台 API",
@@ -69,6 +119,7 @@ app = FastAPI(
     docs_url="/api/docs",
     openapi_url="/api/openapi.json",
     dependencies=[Depends(verify_api_key)],
+    lifespan=lifespan,
 )
 
 # Register global exception handlers
@@ -86,6 +137,10 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "X-API-Key", "Authorization"],
 )
+
+# Rate limiting middleware (Redis-backed with in-memory fallback)
+from api.middlewares.rate_limiter import RateLimitMiddleware
+app.add_middleware(RateLimitMiddleware)
 
 # Mount API routers
 app.include_router(chat.router, prefix="/api/chat", tags=["问答"])
@@ -105,58 +160,12 @@ app.include_router(bid_achievement.router, prefix="/api/bid-achievement", tags=[
 app.include_router(bid_review.router, prefix="/api/bid-review", tags=["标书审查"])
 app.include_router(bid_document.router, prefix="/api/bid-document", tags=["商务文件"])
 app.include_router(solution.router, prefix="/api/solution", tags=["方案助手"])
-
-
-@app.on_event("startup")
-async def startup_event():
-    """Eagerly initialize ChromaStore and warm up HNSW indices.
-    
-    This eliminates cold-start latency for first queries by:
-    1. Initializing ChromaStore and running HNSW backup
-    2. Executing dummy queries to load indices into memory
-    """
-    import time
-    start = time.time()
-    
-    try:
-        from api.deps import get_hybrid_search
-        
-        # Initialize default collection (this also initializes vector store)
-        hybrid = get_hybrid_search("default")
-        print("[startup] ChromaStore initialized, HNSW backup completed")
-        
-        # Warm up HNSW index with dummy query via dense retriever
-        try:
-            dense = hybrid.dense_retriever
-            if dense and dense.vector_store:
-                store = dense.vector_store
-                dim = getattr(store, 'dimension', 1024)
-                dummy_vector = [0.0] * dim
-                store.query(dummy_vector, top_k=1)
-                print(f"[startup] HNSW index warmed up (dim={dim})")
-        except Exception as e:
-            print(f"[startup] HNSW warmup skipped: {e}")
-        
-        elapsed = time.time() - start
-        print(f"[startup] Total warmup time: {elapsed:.2f}s")
-        
-    except Exception as e:
-        print(f"[startup] ChromaStore init failed: {e}")
-        import traceback
-        traceback.print_exc()
+app.include_router(material.router, prefix="/api/material", tags=["资料助手"])
 
 
 @app.get("/api/health")
 async def health():
     return {"ok": True}
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Gracefully close ChromaDB to prevent HNSW index corruption."""
-    from api.deps import shutdown_stores
-    shutdown_stores()
-    logger.info("Application shutdown: all stores closed")
 
 
 # Register allowed base paths for path traversal protection

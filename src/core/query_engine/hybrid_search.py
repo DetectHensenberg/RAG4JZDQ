@@ -149,6 +149,7 @@ class HybridSearch:
         fusion: Optional[RRFFusion] = None,
         config: Optional[HybridSearchConfig] = None,
         reranker: Optional[Any] = None,
+        query_rewriter: Optional[Any] = None,
     ) -> None:
         """Initialize HybridSearch with components.
         
@@ -171,6 +172,7 @@ class HybridSearch:
         self.sparse_retriever = sparse_retriever
         self.fusion = fusion
         self.reranker = reranker
+        self.query_rewriter = query_rewriter
         self.parent_store: Optional[Any] = None  # ParentStore, set externally for Parent Retrieval
         self.graph_store: Optional[Any] = None   # GraphStore, set externally for GraphRAG
         self.strategy_router: Optional[Any] = None  # StrategyRouter, set externally
@@ -287,55 +289,78 @@ class HybridSearch:
                 )
             return final_results
         
-        # Step 1: Process query
+        # Step 1: Process query (and optional rewrite)
         logger.info("[Thinking] Retrieving: Processing query and searching indexes...")
         _t0 = time.monotonic()
-        processed_query = self._process_query(query)
+        
+        queries_to_process = [query]
+        rewrite_used = False
+        if getattr(self, "query_rewriter", None) is not None and self.query_rewriter.rewrite_enabled:
+            rewrite_result = self.query_rewriter.rewrite(query)
+            if rewrite_result.rewritten_queries and len(rewrite_result.rewritten_queries) > 1:
+                queries_to_process = rewrite_result.rewritten_queries
+                rewrite_used = True
+                logger.info(f"Query rewritten into {len(queries_to_process)} variants: {queries_to_process}")
+
+        processed_queries = [self._process_query(q) for q in queries_to_process]
+        processed_query_for_intent = processed_queries[0]
+        
         _elapsed = (time.monotonic() - _t0) * 1000.0
         if trace is not None:
             trace.record_stage("query_processing", {
-                "method": "query_processor",
+                "method": "llm_rewrite" if rewrite_used else "query_processor",
                 "original_query": query,
-                "keywords": processed_query.keywords,
+                "rewritten_queries": queries_to_process if rewrite_used else [],
+                "primary_keywords": processed_query_for_intent.keywords,
             }, elapsed_ms=_elapsed)
+            
+        all_dense = []
+        all_sparse = []
+        d_errors = []
+        s_errors = []
         
-        # Merge explicit filters with query-extracted filters
-        merged_filters = self._merge_filters(processed_query.filters, filters)
-        
-        # Step 2: Run retrievals
-        dense_results, sparse_results, dense_error, sparse_error = self._run_retrievals(
-            processed_query=processed_query,
-            filters=merged_filters,
-            trace=trace,
-        )
+        # Step 2: Run retrievals for all query variants
+        for pq in processed_queries:
+            merged_filters = self._merge_filters(pq.filters, filters)
+            d_res, s_res, d_err, s_err = self._run_retrievals(pq, merged_filters, trace)
+            if d_res: all_dense.extend(d_res)
+            if s_res: all_sparse.extend(s_res)
+            if d_err is not None: d_errors.append(d_err)
+            if s_err is not None: s_errors.append(s_err)
+            
+        def dedup_and_sort(res_list: List[RetrievalResult]) -> Optional[List[RetrievalResult]]:
+            if not res_list: return None
+            seen = {}
+            for r in res_list:
+                if r.chunk_id not in seen or r.score > seen[r.chunk_id].score:
+                    seen[r.chunk_id] = r
+            return sorted(list(seen.values()), key=lambda x: x.score, reverse=True)
+            
+        dense_results = dedup_and_sort(all_dense)
+        sparse_results = dedup_and_sort(all_sparse)
+        dense_error = " ; ".join(set(d_errors)) if d_errors else None
+        sparse_error = " ; ".join(set(s_errors)) if s_errors else None
         
         # Step 3: Handle fallback scenarios
         used_fallback = False
         if dense_error and sparse_error:
-            # Both failed - raise error
-            raise RuntimeError(
-                f"Both retrieval paths failed. "
-                f"Dense error: {dense_error}. Sparse error: {sparse_error}"
-            )
+            raise RuntimeError(f"Both retrieval paths failed. Dense error: {dense_error}. Sparse error: {sparse_error}")
         elif dense_error:
-            # Dense failed, use sparse only
             logger.warning(f"Dense retrieval failed, using sparse only: {dense_error}")
             used_fallback = True
             fused_results = sparse_results or []
         elif sparse_error:
-            # Sparse failed, use dense only
             logger.warning(f"Sparse retrieval failed, using dense only: {sparse_error}")
             used_fallback = True
             fused_results = dense_results or []
         elif not dense_results and not sparse_results:
-            # Both succeeded but returned empty
             fused_results = []
         else:
             # Step 4: Fuse results
             fused_results = self._fuse_results(
                 dense_results=dense_results or [],
                 sparse_results=sparse_results or [],
-                weights=processed_query.intent_weights,
+                weights=processed_query_for_intent.intent_weights,
                 top_k=fusion_top_k,
                 trace=trace,
             )
@@ -1035,6 +1060,17 @@ def create_hybrid_search(
             if retrieval_config is not None:
                 rrf_k = getattr(retrieval_config, 'rrf_k', 60)
         fusion = RRFFusion(k=rrf_k)
+        
+    query_rewriter = None
+    if settings is not None:
+        from src.core.query_engine.query_rewriter import QueryRewriter
+        from src.libs.llm.llm_factory import LLMFactory
+        try:
+            llm = LLMFactory.create(settings)
+            query_rewriter = QueryRewriter(settings, llm)
+        except Exception as e:
+            import logging
+            logging.getLogger(__name__).warning(f"Failed to initialize QueryRewriter: {e}")
     
     return HybridSearch(
         settings=settings,
@@ -1042,6 +1078,7 @@ def create_hybrid_search(
         dense_retriever=dense_retriever,
         sparse_retriever=sparse_retriever,
         fusion=fusion,
+        query_rewriter=query_rewriter,
     )
 
 

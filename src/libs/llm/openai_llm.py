@@ -7,6 +7,7 @@ endpoints by configuring the base_url.
 
 from __future__ import annotations
 
+import json
 import os
 from typing import Any, Dict, List, Optional
 
@@ -106,9 +107,14 @@ class OpenAILLM(BaseLLM):
         # Store any additional kwargs for future use
         self._extra_config = kwargs
         
-        # Persistent HTTP client for connection pooling
+        # Persistent HTTP clients for connection pooling
+        # timeout=None: 不限制等待时间，标书助手等场景大 prompt 处理耗时较长
         self._http_client = httpx.Client(
-            timeout=120.0,
+            timeout=None,
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
+        )
+        self._async_http_client = httpx.AsyncClient(
+            timeout=None,
             limits=httpx.Limits(max_connections=10, max_keepalive_connections=5),
         )
     
@@ -236,7 +242,6 @@ class OpenAILLM(BaseLLM):
                     if data.strip() == "[DONE]":
                         break
                     try:
-                        import json
                         chunk = json.loads(data)
                         delta = chunk.get("choices", [{}])[0].get("delta", {})
                         content = delta.get("content", "")
@@ -286,29 +291,27 @@ class OpenAILLM(BaseLLM):
         }
         
         try:
-            async with httpx.AsyncClient(timeout=120.0) as client:
-                async with client.stream("POST", url, json=payload, headers=headers) as response:
-                    if response.status_code != 200:
-                        await response.aread()
-                        raise OpenAILLMError(
-                            f"[LLM:{self.model}] Async Stream API error (HTTP {response.status_code}): {response.text}"
-                        )
-                    
-                    async for line in response.aiter_lines():
-                        if not line or not line.startswith("data: "):
-                            continue
-                        data = line[6:]
-                        if data.strip() == "[DONE]":
-                            break
-                        try:
-                            import json
-                            chunk = json.loads(data)
-                            delta = chunk.get("choices", [{}])[0].get("delta", {})
-                            content = delta.get("content", "")
-                            if content:
-                                yield content
-                        except (json.JSONDecodeError, IndexError, KeyError):
-                            continue
+            async with self._async_http_client.stream("POST", url, json=payload, headers=headers) as response:
+                if response.status_code != 200:
+                    await response.aread()
+                    raise OpenAILLMError(
+                        f"[LLM:{self.model}] Async Stream API error (HTTP {response.status_code}): {response.text}"
+                    )
+                
+                async for line in response.aiter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data = line[6:]
+                    if data.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content", "")
+                        if content:
+                            yield content
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        continue
         except httpx.TimeoutException as e:
             raise OpenAILLMError(f"[LLM:{self.model}] Async Stream timeout") from e
         except httpx.RequestError as e:

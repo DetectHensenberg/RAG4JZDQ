@@ -134,7 +134,7 @@ def _parse_embedding_settings(embedding: Dict[str, Any]) -> "EmbeddingSettings":
         provider=_require_str(embedding, "provider", "embedding"),
         model=_require_str(embedding, "model", "embedding"),
         dimensions=_require_int(embedding, "dimensions", "embedding"),
-        api_key=_resolve_api_key(embedding.get("api_key")),
+        api_key=embedding.get("api_key") or os.environ.get("EMBEDDING_API_KEY") or _resolve_api_key(None),
         api_version=embedding.get("api_version"),
         azure_endpoint=embedding.get("azure_endpoint"),
         deployment_name=embedding.get("deployment_name"),

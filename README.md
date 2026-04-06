@@ -2,7 +2,7 @@
 
 > 模块化 RAG（检索增强生成）知识管理平台，支持多格式文档摄取、混合检索、智能问答，并通过 MCP 协议对外暴露标准化工具接口。
 
-**🎉 稳定版本 v1.0** — 开箱即用，已内置 API Key，朋友们可直接使用！
+**🎉 稳定版本 v1.0** — 开箱即用，复制 `.env.example` 为 `.env` 并填入你的 API Key 即可使用！
 
 ---
 
@@ -171,7 +171,14 @@ chmod +x setup.sh && ./setup.sh
 
 安装脚本会自动完成：创建虚拟环境 → 安装依赖 → 生成配置文件 → 构建前端。
 
-> **首次安装后**：打开 `.env` 文件，将 `your-dashscope-api-key-here` 替换为你的 API Key。
+> **首次安装后**：复制 `.env.example` 为 `.env`，并填入你的 DashScope / Embedding API Key。
+>
+> ```bash
+> cp .env.example .env
+> # 编辑 .env 文件，填入你的 API Key
+> ```
+>
+> **❗ 安全提示：** `.env` 文件已被 `.gitignore` 排除，**切勿将含有真实密钥的 `.env` 提交到 Git**。
 
 > **OCR 功能**（可选）需额外安装 [Tesseract](https://github.com/UB-Mannheim/tesseract/wiki)（安装时勾选中文语言包）。
 
@@ -192,7 +199,7 @@ start_vue.bat          # Windows
 ### 4. 使用 MCP Server（可选）
 
 ```bash
-python main.py
+python src/mcp_server/server.py
 ```
 
 可对接 VS Code Copilot / Claude Desktop 等 AI 助手。
@@ -213,6 +220,20 @@ docker compose up -d
 
 > **数据持久化**：`./data/` 目录通过 volume 自动挂载，容器重建不丢数据。
 > **自定义端口**：修改 `.env` 中的 `RAG_PORT=8000` 即可。
+
+#### 离线部署（预构建镜像）
+
+如果目标环境无法联网执行 `docker build`，可在有网络的机器上预构建镜像后导出：
+
+```bash
+# 有网环境：构建并导出镜像
+docker compose build
+docker save jiuzhou-rag:latest | gzip > jiuzhou-rag.tar.gz
+
+# 离线环境：加载镜像并启动
+docker load < jiuzhou-rag.tar.gz
+docker compose up -d
+```
 
 ---
 
@@ -304,7 +325,7 @@ ingestion:
   "servers": {
     "rag-server": {
       "command": "python",
-      "args": ["main.py"],
+      "args": ["src/mcp_server/server.py"],
       "cwd": "<项目路径>"
     }
   }
@@ -320,7 +341,7 @@ ingestion:
   "mcpServers": {
     "rag-server": {
       "command": "python",
-      "args": ["<项目路径>/main.py"]
+      "args": ["<项目路径>/src/mcp_server/server.py"]
     }
   }
 }

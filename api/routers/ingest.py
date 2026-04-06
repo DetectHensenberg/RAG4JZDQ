@@ -168,7 +168,7 @@ async def upload_and_ingest(
         from api.deps import get_pipeline
 
         pipeline = get_pipeline(collection=collection)
-        result = pipeline.run(
+        result = await pipeline.run(
             file_path=tmp_path,
             original_filename=file.filename,
             extra_metadata=extra_metadata if extra_metadata else None,

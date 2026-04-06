@@ -14,6 +14,11 @@ from src.libs.llm.base_llm import Message
 
 logger = logging.getLogger(__name__)
 
+# Maximum characters to send to LLM for clause extraction.
+# Truncation prevents token overflow on large tender files.
+# Raise to ~20000 if using a model with 128K+ context window.
+MAX_CLAUSE_CONTENT_LENGTH = 12_000
+
 CLAUSE_EXTRACTION_PROMPT = """你是一个专业的招标文件分析助手。请从以下招标文件内容中提取商务文件要求条款。
 
 招标文件内容：
@@ -62,7 +67,7 @@ def _parse_json_from_response(response: str) -> List[Dict[str, Any]]:
 async def extract_clauses(
     content: str,
     llm: Any,
-    max_content_length: int = 12000,
+    max_content_length: int = MAX_CLAUSE_CONTENT_LENGTH,
 ) -> List[Dict[str, Any]]:
     """从招标文件内容中提取商务文件条款.
     

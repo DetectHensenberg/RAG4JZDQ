@@ -124,6 +124,7 @@ class LLMFactory:
         
         # Instantiate the provider
         # Provider classes should accept settings and optional kwargs
+        print(f"DEBUG LLMFactory provider_class: {provider_class} from {provider_class.__module__}")
         try:
             return provider_class(settings=settings, **override_kwargs)
         except Exception as e:

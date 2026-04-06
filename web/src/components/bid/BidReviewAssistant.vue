@@ -127,6 +127,14 @@
         </div>
       </div>
       <div class="report-body" ref="reportBodyRef">
+        <!-- Loading state -->
+        <div v-if="streaming && !reportContent" class="report-loading">
+          <div class="loading-spinner" />
+          <div class="loading-text">
+            <h4>正在审查中，请耐心等待…</h4>
+            <p>AI 正在对照 {{ disqualItems.length }} 条废标项逐一核查投标文件，大约需要 1-2 分钟</p>
+          </div>
+        </div>
         <!-- Markdown view -->
         <div v-if="reportView === 'markdown'" v-html="renderedReport" class="report-md" />
         <!-- Table view -->
@@ -154,7 +162,7 @@
             </el-checkbox-group>
           </div>
         </div>
-        <span v-if="streaming" class="cursor-blink" />
+        <span v-if="streaming && reportContent" class="cursor-blink" />
       </div>
       <div class="report-actions">
         <el-button @click="copyReport"><el-icon :size="14"><CopyDocument /></el-icon> 复制报告</el-button>
@@ -626,6 +634,41 @@ function resetAll() {
   padding-top: var(--sp-4);
   flex-shrink: 0;
 }
+
+/* Loading state */
+.report-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 20px;
+  gap: 20px;
+  animation: fadeIn 0.3s ease;
+}
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 3px solid var(--c-border);
+  border-top-color: #4ade80;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+.loading-text {
+  text-align: center;
+}
+.loading-text h4 {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--c-text-primary);
+  margin: 0 0 var(--sp-2);
+}
+.loading-text p {
+  font-size: var(--fs-sm);
+  color: var(--c-text-tertiary);
+  margin: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
 
 /* Cursor blink */
 .cursor-blink {

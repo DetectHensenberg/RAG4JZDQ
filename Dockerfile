@@ -40,8 +40,10 @@ COPY src/ ./src/
 
 # 使用 pyproject.toml 声明式依赖安装（自动解析平台匹配版本）
 RUN pip install --no-cache-dir \
-    -i https://mirrors.aliyun.com/pypi/simple/ \
-    --trusted-host mirrors.aliyun.com \
+    --default-timeout=120 \
+    --retries=3 \
+    -i https://pypi.tuna.tsinghua.edu.cn/simple/ \
+    --trusted-host pypi.tuna.tsinghua.edu.cn \
     ".[ml]" \
     python-dotenv \
     python-multipart \
@@ -57,6 +59,13 @@ COPY --from=frontend-builder /build/web/dist ./web/dist
 
 # 创建数据目录（运行时通过 volume 挂载）
 RUN mkdir -p data/db data/images data/exports data/solution_files logs
+
+# ── 源码隐藏：编译 Python 字节码，删除 .py 源文件 ────────────
+# 将 src/ 和 api/ 下所有 .py 文件编译为 .pyc 字节码
+# 仅发布 .pyc 文件，保护源代码不被查看
+RUN python -m compileall -b -q src/ api/ && \
+    find src/ api/ -name "*.py" -not -name "__init__.py" -delete && \
+    find src/ api/ -name "__pycache__" -exec sh -c 'mv "$1"/*.pyc "$(dirname "$1")/" 2>/dev/null; rm -rf "$1"' _ {} \; 2>/dev/null || true
 
 # 环境变量
 ENV PYTHONUNBUFFERED=1

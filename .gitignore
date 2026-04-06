@@ -51,7 +51,7 @@ coverage.xml
 *.pot
 
 # Environments
-# .env  # 已移除排除，允许朋友使用内置 API Key
+.env
 .venv
 env/
 venv/
@@ -101,13 +101,11 @@ cache/
 logs/
 *.log
 traces.jsonl
-docs/背调/
 
 # Auto-coder skill cache
 .github/skills/auto-coder/.spec_hash
 
 # Secrets
-# .env  # 已移除排除
 .env.local
 .env.*.local
 .encrypt_key
@@ -120,5 +118,13 @@ nonexistent_traces.jsonl/
 # Temporary test and capture files
 pytest_*.txt
 nuls/
-tests/docs/*/
-tests/docs/*.zip
+
+# Large test fixtures (not tracked)
+tests/五个项目.zip
+tests/五个项目/
+
+# Directories excluded from remote (large files / local-only)
+docs/
+tests/
+OUT/
+image/

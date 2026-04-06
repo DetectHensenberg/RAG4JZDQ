@@ -81,6 +81,9 @@ class MetadataEnricher(BaseTransform):
                 self._llm = LLMFactory.create(self.settings)
                 logger.info("LLM initialized for metadata enrichment")
             except Exception as e:
+                logger.error(f"DEBUG settings.llm.api_key in enricher: {self.settings.llm.api_key}")
+                import traceback
+                logger.error(f"Traceback: {traceback.format_exc()}")
                 logger.warning(f"Failed to initialize LLM: {e}. Falling back to rule-based only.")
                 self.use_llm = False
         return self._llm
@@ -350,6 +353,8 @@ class MetadataEnricher(BaseTransform):
         return {
             'title': title,
             'summary': summary,
+            'category': '通用文档',
+            'project': 'None',
             'tags': tags
         }
     
@@ -548,6 +553,8 @@ class MetadataEnricher(BaseTransform):
         metadata = {
             'title': '',
             'summary': '',
+            'category': '',
+            'project': '',
             'tags': []
         }
         
@@ -561,6 +568,16 @@ class MetadataEnricher(BaseTransform):
         if summary_match:
             metadata['summary'] = summary_match.group(1).strip()
         
+        # Extract category
+        category_match = re.search(r'Category:\s*(.+?)(?:\n|$)', response, re.IGNORECASE)
+        if category_match:
+            metadata['category'] = category_match.group(1).strip()
+            
+        # Extract project
+        project_match = re.search(r'Project:\s*(.+?)(?:\n|$)', response, re.IGNORECASE)
+        if project_match:
+            metadata['project'] = project_match.group(1).strip()
+            
         # Extract tags
         tags_match = re.search(r'Tags:\s*(.+?)(?:\n|$)', response, re.IGNORECASE)
         if tags_match:
@@ -574,5 +591,9 @@ class MetadataEnricher(BaseTransform):
             metadata['title'] = 'Untitled'
         if not metadata['summary']:
             metadata['summary'] = response[:500]  # Fallback to raw response
+        if not metadata['category']:
+            metadata['category'] = '通用文档'
+        if not metadata['project']:
+            metadata['project'] = 'None'
         
         return metadata

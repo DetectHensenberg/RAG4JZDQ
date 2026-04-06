@@ -58,8 +58,22 @@
         </div>
       </div>
       <div v-if="extracting" class="extracting-box">
-        <el-icon class="is-loading" :size="24"><Loading /></el-icon>
-        <span>正在解析招标文件，识别商务文件条款...</span>
+        <div class="ai-pulse-ring"></div>
+        <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+        <div class="extracting-info">
+          <h4>AI 正在分析招标文件</h4>
+          <p>正在识别商务文件条款，云端模型处理中，请耐心等待...</p>
+          <span class="elapsed-time">已用时 {{ elapsedTime }} 秒</span>
+        </div>
+      </div>
+      <div v-if="generatingOutline && step === 1" class="extracting-box">
+        <div class="ai-pulse-ring"></div>
+        <el-icon class="is-loading" :size="32"><Loading /></el-icon>
+        <div class="extracting-info">
+          <h4>AI 正在生成商务文件大纲</h4>
+          <p>基于条款分析结果，云端模型生成中，请耐心等待...</p>
+          <span class="elapsed-time">已用时 {{ elapsedTime }} 秒</span>
+        </div>
       </div>
       <el-table v-else :data="clauses" stripe size="small" class="clauses-table" max-height="450">
         <el-table-column type="selection" width="40" />
@@ -229,7 +243,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, reactive, onMounted } from 'vue'
+import { ref, reactive, onMounted, onUnmounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
   Document, UploadFilled, Check, Loading, Rank,
@@ -270,6 +284,19 @@ const watermarking = ref(false)
 
 // Step 5
 const exporting = ref(false)
+
+// Timer for AI waiting
+const elapsedTime = ref(0)
+let timerInterval: ReturnType<typeof setInterval> | null = null
+
+const startTimer = () => {
+  elapsedTime.value = 0
+  timerInterval = setInterval(() => { elapsedTime.value++ }, 1000)
+}
+const stopTimer = () => {
+  if (timerInterval) { clearInterval(timerInterval); timerInterval = null }
+}
+onUnmounted(() => stopTimer())
 
 // ── Helpers ─────────────────────────────────────────────────────
 
@@ -342,9 +369,10 @@ const extractClauses = async () => {
   if (!sessionId.value) return
   extracting.value = true
   clauses.value = []
+  startTimer()
 
   try {
-    const { data } = await api.post('/bid-document/extract', { session_id: sessionId.value }, { timeout: 120000 })
+    const { data } = await api.post('/bid-document/extract', { session_id: sessionId.value }, { timeout: 0 })
     console.log('[BidDoc] extract response:', JSON.stringify(data).slice(0, 500))
     if (data.ok) {
       clauses.value = data.clauses || []
@@ -359,6 +387,7 @@ const extractClauses = async () => {
     ElMessage.error(e.message || '条款提取失败')
   } finally {
     extracting.value = false
+    stopTimer()
   }
 }
 
@@ -383,8 +412,9 @@ const fetchSession = async () => {
 const generateOutline = async () => {
   if (!sessionId.value) return
   generatingOutline.value = true
+  startTimer()
   try {
-    const { data } = await api.post('/bid-document/outline', { session_id: sessionId.value }, { timeout: 120000 })
+    const { data } = await api.post('/bid-document/outline', { session_id: sessionId.value }, { timeout: 0 })
     if (data.ok) {
       outline.value = (data.outline || []).map((item: any) => ({ ...item, selected: true }))
       step.value = 2
@@ -396,6 +426,7 @@ const generateOutline = async () => {
     ElMessage.error(e.message || '大纲生成失败')
   } finally {
     generatingOutline.value = false
+    stopTimer()
   }
 }
 
@@ -651,11 +682,50 @@ onMounted(() => {
 
 .extracting-box {
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--sp-3);
-  padding: var(--sp-8);
+  gap: var(--sp-4);
+  padding: var(--sp-10) var(--sp-8);
   color: var(--c-text-tertiary);
+  position: relative;
+}
+.extracting-info {
+  text-align: center;
+}
+.extracting-info h4 {
+  font-size: var(--fs-base);
+  font-weight: 600;
+  color: var(--c-text-primary);
+  margin: 0 0 var(--sp-2);
+}
+.extracting-info p {
+  font-size: var(--fs-sm);
+  color: var(--c-text-tertiary);
+  margin: 0 0 var(--sp-2);
+}
+.elapsed-time {
+  font-size: var(--fs-xs);
+  color: var(--c-accent);
+  font-variant-numeric: tabular-nums;
+  animation: fade-pulse 2s ease-in-out infinite;
+}
+.ai-pulse-ring {
+  position: absolute;
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  border: 2px solid var(--c-accent);
+  opacity: 0;
+  animation: pulse-ring 2s ease-out infinite;
+}
+@keyframes pulse-ring {
+  0% { transform: scale(0.6); opacity: 0.6; }
+  100% { transform: scale(1.8); opacity: 0; }
+}
+@keyframes fade-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
 }
 
 /* ── Outline step ── */

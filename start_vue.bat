@@ -8,14 +8,14 @@ echo ============================================
 echo.
 
 REM Activate venv if present
-if exist ".venv\Scripts\activate.bat" call ".venv\Scripts\activate.bat"
+if exist ".venv\Scripts\activate.bat" (call ".venv\Scripts\activate.bat") 2>nul
 
 REM Check if web/dist exists (production mode)
 if exist "web\dist\index.html" (
     echo [生产模式] 启动 FastAPI + 静态文件...
     python -m uvicorn api.main:app --host localhost --port 8000
     goto :end
-)
+) 2>nul
 
 echo [开发模式] 同时启动前后端...
 echo.

@@ -8,7 +8,7 @@
 llm:
   provider: "openai"  # Using DashScope OpenAI-compatible API for Qwen
   model: "qwen3.5-plus"
-  base_url: "https://coding.dashscope.aliyuncs.com/v1"
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
   api_key: ""  # 从环境变量 DASHSCOPE_API_KEY 自动读取
   temperature: 0.0
   max_tokens: 4096
@@ -52,7 +52,7 @@ retrieval:
   sparse_top_k: 20
   fusion_top_k: 10
   rrf_k: 60  # RRF constant
-  query_rewrite: false  # LLM query rewriting (requires LLM calls)
+  query_rewrite: true  # LLM query rewriting (requires LLM calls)
   hyde_enabled: false   # HyDE - Hypothetical Document Embedding (requires LLM calls)
   parent_retrieval_mode: "auto"  # auto | always | never
   graph_rag_mode: "auto"         # auto | always | never

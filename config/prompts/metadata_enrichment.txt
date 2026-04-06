@@ -1,4 +1,4 @@
-You are a metadata extraction assistant. Analyze the following text chunk and generate enriched metadata.
+You are a metadata extraction assistant for a professional knowledge base (primarily focusing on bidding, procurement, regulations, and technical domains). Analyze the following text chunk and generate enriched structural metadata.
 
 Text Chunk:
 ```
@@ -6,18 +6,21 @@ Text Chunk:
 ```
 
 Instructions:
-1. Generate a concise, descriptive title (max 150 characters) that captures the main topic
-2. Write a summary (2-3 sentences, max 500 characters) that explains the key content
-3. Extract 3-10 relevant tags/keywords that categorize the content
+1. Generate a concise, descriptive title (max 150 characters) that captures the main topic.
+2. Write a summary (1-2 sentences, max 300 characters) that explains the key content.
+3. Extract specific Business Keywords (Tags) and Structural Metadata from the text:
+   - Category: The type of this document/chunk (e.g., 招标文件, 投标文件, 规章制度, 资质要求, 技术白皮书, 会议纪要, etc.). If unknown, use '通用文档'.
+   - Project: The specific project name mentioned (e.g., '水利二期', 'XX改造工程'). If none mentioned, output 'None'.
+   - Key Entities: Specifically look for company names, certifications/qualifications (资质), product models, or crucial technical terms.
 
-Format your response exactly as follows:
+Format your response EXACTLY as follows (do not add markdown blocks or extra text):
 Title: <your generated title>
 Summary: <your generated summary>
-Tags: <tag1>, <tag2>, <tag3>, ...
+Category: <identified category>
+Project: <identified project name or None>
+Tags: <entity1>, <entity2>, <keyword3>, ...
 
 Requirements:
-- Title should be clear and informative, not generic
-- Summary should capture the essence, not just repeat the title
-- Tags should be specific topics, concepts, or entities mentioned in the text
-- Use comma-separated values for tags
-- Be concise and precise
+- Title should be clear and informative, not generic.
+- Tags must be specific topics or entities, bounded to max 8 tags. Use comma-separated values.
+- Be extremely extremely concise and precise.

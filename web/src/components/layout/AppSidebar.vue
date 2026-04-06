@@ -38,7 +38,9 @@
 
     <!-- Footer -->
     <div class="sidebar-footer">
-      <span>v1.0</span>
+      <div class="footer-version">v1.0.0</div>
+      <div class="footer-copyright">四川九洲电器集团 707部 版权所有</div>
+      <router-link to="/license" class="footer-license-link">查看版权开源协议</router-link>
     </div>
   </div>
 </template>
@@ -55,6 +57,7 @@ import {
   Download,
   TrendCharts,
   Setting,
+  EditPen,
 } from '@element-plus/icons-vue'
 
 const route = useRoute()
@@ -63,6 +66,8 @@ const currentRoute = computed(() => route.path)
 const mainItems = [
   { path: '/', title: '知识问答', icon: ChatDotRound },
   { path: '/bid', title: '标书助手', icon: Document },
+  { path: '/solution', title: '方案助手', icon: EditPen },
+  { path: '/material', title: '资料助手', icon: Download },
   { path: '/knowledge', title: '知识库构建', icon: FolderOpened },
   { path: '/browser', title: '数据浏览', icon: Search },
 ]
@@ -165,7 +170,34 @@ const systemItems = [
 .sidebar-footer {
   padding: var(--sp-4) var(--sp-5) 0;
   border-top: 1px solid var(--c-border);
-  font-size: 11px;
+  font-size: 10px;
   color: var(--c-text-tertiary);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.footer-version {
+  font-size: 10px;
+  color: var(--c-text-tertiary);
+  opacity: 0.5;
+}
+
+.footer-copyright {
+  font-size: 10px;
+  color: var(--c-text-tertiary);
+  line-height: 1.4;
+}
+
+.footer-license-link {
+  font-size: 10px;
+  color: var(--c-accent);
+  opacity: 0.6;
+  text-decoration: none;
+  transition: opacity var(--duration);
+}
+
+.footer-license-link:hover {
+  opacity: 1;
 }
 </style>

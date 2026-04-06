@@ -30,9 +30,30 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - CORS_ORIGINS=http://localhost:${RAG_PORT:-8000}
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      - redis
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/api/health')"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: jiuzhou-redis
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  redis_data:

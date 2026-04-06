@@ -10,11 +10,14 @@
         </keep-alive>
       </router-view>
     </main>
+    <!-- 新手引导：首次使用自动弹出 -->
+    <OnboardingGuide />
   </div>
 </template>
 
 <script setup lang="ts">
 import AppSidebar from '@/components/layout/AppSidebar.vue'
+import OnboardingGuide from '@/components/OnboardingGuide.vue'
 </script>
 
 <style scoped>

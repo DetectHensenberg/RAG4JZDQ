@@ -13,7 +13,7 @@ export function useSSE() {
   let isStreaming = false
   let reconnectAttempts = 0
   
-  const HEARTBEAT_TIMEOUT = 60000  // 60s without events = stale
+  const HEARTBEAT_TIMEOUT = 180000  // 180s without events = stale (LLM calls can take 60-120s)
   const MAX_RECONNECT_ATTEMPTS = 3
   const RECONNECT_DELAY = 2000  // 2s between reconnects
 

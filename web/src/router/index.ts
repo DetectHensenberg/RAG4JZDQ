@@ -52,10 +52,22 @@ const router = createRouter({
       meta: { title: '评估面板', icon: 'TrendCharts' },
     },
     {
+      path: '/material',
+      name: 'material',
+      component: () => import('@/views/MaterialAssistant.vue'),
+      meta: { title: '资料助手', icon: 'Download' },
+    },
+    {
       path: '/config',
       name: 'config',
       component: () => import('@/views/SystemConfig.vue'),
       meta: { title: '系统配置', icon: 'Setting' },
+    },
+    {
+      path: '/license',
+      name: 'license',
+      component: () => import('@/views/LicensePage.vue'),
+      meta: { title: '版权声明', icon: 'Document' },
     },
   ],
 })

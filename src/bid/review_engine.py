@@ -7,6 +7,7 @@ bid responses against those items via SSE streaming.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -386,12 +387,21 @@ async def check_bid_response_stream(
         messages = [Message(role="user", content=prompt)]
         stream_func = getattr(llm, "stream_chat", None) or getattr(llm, "chat_stream", None)
         if stream_func and callable(stream_func):
-            async for chunk in stream_func(messages):
-                token = chunk if isinstance(chunk, str) else str(chunk)
-                full_response += token
-                yield {"type": "token", "content": token}
+            result = stream_func(messages)
+            # Support both sync generators and async generators
+            if hasattr(result, "__aiter__"):
+                async for chunk in result:
+                    token = chunk if isinstance(chunk, str) else str(chunk)
+                    full_response += token
+                    yield {"type": "token", "content": token}
+            else:
+                for chunk in result:
+                    token = chunk if isinstance(chunk, str) else str(chunk)
+                    full_response += token
+                    yield {"type": "token", "content": token}
         elif hasattr(llm, "chat"):
-            resp = llm.chat(messages)
+            # Run sync chat in thread pool to avoid blocking event loop
+            resp = await asyncio.to_thread(llm.chat, messages)
             full_response = resp.content if hasattr(resp, "content") else str(resp)
             # Simulate streaming by sending in chunks
             chunk_size = 50

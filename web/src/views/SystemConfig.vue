@@ -19,35 +19,97 @@
 
     <!-- Config Form -->
     <div v-else class="config-grid">
-      <!-- API Key Section -->
+      <!-- API Key Section: LLM + Vision -->
       <section class="config-section" style="--delay: 0">
         <div class="section-header">
           <el-icon :size="18"><Key /></el-icon>
-          <span>API Key</span>
-          <span v-if="apiKeyMasked" class="status-badge status-success">已配置</span>
+          <span>模型 Key <span class="key-hint">（LLM + 视觉, Coding Plan API）</span></span>
+          <span v-if="llmKeyMasked" class="status-badge status-success">已配置</span>
           <span v-else class="status-badge status-warning">未配置</span>
         </div>
         <div class="section-body">
-          <div v-if="apiKeyMasked" class="api-status">
+          <div v-if="llmKeyMasked" class="api-status">
             <el-icon :size="16"><CircleCheck /></el-icon>
-            <span>{{ apiKeyMasked }}</span>
+            <span>{{ llmKeyMasked }}</span>
           </div>
           <div class="field-row">
-            <label class="field-label">新 API Key</label>
+            <label class="field-label">模型 Key（LLM / Vision）</label>
             <el-input
-              v-model="newApiKey"
+              v-model="newLlmKey"
               type="password"
               placeholder="输入新 Key（留空保持不变）"
               show-password
             />
           </div>
+          <div class="field-row">
+            <label class="field-label">Base URL</label>
+            <el-input
+              v-model="llmBaseUrl"
+              placeholder="https://coding.dashscope.aliyuncs.com/v1"
+            />
+          </div>
+          <div class="field-row">
+            <label class="field-label">模型名称</label>
+            <el-input
+              v-model="llmModel"
+              placeholder="qwen-plus"
+            />
+          </div>
           <div class="field-actions">
-            <button class="action-btn" @click="testConnection" :disabled="testing">
-              <el-icon :size="16"><Connection v-if="!testing" /><Loading v-else class="spin" /></el-icon>
-              <span>{{ testing ? '测试中...' : '测试连接' }}</span>
+            <button class="action-btn" @click="testLlmKey" :disabled="testingLlm">
+              <el-icon :size="16"><Connection v-if="!testingLlm" /><Loading v-else class="spin" /></el-icon>
+              <span>{{ testingLlm ? '测试中...' : '测试连接' }}</span>
             </button>
-            <span v-if="testResult" class="test-result" :class="testResult.ok ? 'success' : 'error'">
-              {{ testResult.message }}
+            <span v-if="llmTestResult" class="test-result" :class="llmTestResult.ok ? 'success' : 'error'">
+              {{ llmTestResult.message }}
+            </span>
+          </div>
+        </div>
+      </section>
+
+      <!-- API Key Section: Embedding -->
+      <section class="config-section" style="--delay: 1">
+        <div class="section-header">
+          <el-icon :size="18"><Key /></el-icon>
+          <span>Embedding Key <span class="key-hint">（打向量专用, 普通 API）</span></span>
+          <span v-if="embKeyMasked" class="status-badge status-success">已配置</span>
+          <span v-else class="status-badge status-warning">未配置</span>
+        </div>
+        <div class="section-body">
+          <div v-if="embKeyMasked" class="api-status">
+            <el-icon :size="16"><CircleCheck /></el-icon>
+            <span>{{ embKeyMasked }}</span>
+          </div>
+          <div class="field-row">
+            <label class="field-label">Embedding Key</label>
+            <el-input
+              v-model="newEmbKey"
+              type="password"
+              placeholder="输入新 Key（留空保持不变）"
+              show-password
+            />
+          </div>
+          <div class="field-row">
+            <label class="field-label">Base URL</label>
+            <el-input
+              v-model="embBaseUrl"
+              placeholder="https://dashscope.aliyuncs.com/compatible-mode/v1"
+            />
+          </div>
+          <div class="field-row">
+            <label class="field-label">模型名称</label>
+            <el-input
+              v-model="embModel"
+              placeholder="text-embedding-v3"
+            />
+          </div>
+          <div class="field-actions">
+            <button class="action-btn" @click="testEmbKey" :disabled="testingEmb">
+              <el-icon :size="16"><Connection v-if="!testingEmb" /><Loading v-else class="spin" /></el-icon>
+              <span>{{ testingEmb ? '测试中...' : '测试连接' }}</span>
+            </button>
+            <span v-if="embTestResult" class="test-result" :class="embTestResult.ok ? 'success' : 'error'">
+              {{ embTestResult.message }}
             </span>
           </div>
         </div>
@@ -258,26 +320,65 @@
           </div>
         </div>
       </section>
+
+      <!-- About -->
+      <section class="config-section about-section" style="--delay: 6">
+        <div class="section-header">
+          <el-icon :size="18"><InfoFilled /></el-icon>
+          <span>关于</span>
+        </div>
+        <div class="section-body">
+          <div class="about-row">
+            <span class="about-label">版本</span>
+            <span class="about-value">v1.0.0</span>
+          </div>
+          <div class="about-row">
+            <span class="about-label">版权</span>
+            <span class="about-value">四川九洲电器集团 707部</span>
+          </div>
+          <div class="about-actions">
+            <router-link to="/license" class="about-link">查看版权声明与开源协议 →</router-link>
+            <button class="about-link-btn" @click="restartOnboarding">重新打开新手引导</button>
+          </div>
+        </div>
+      </section>
     </div>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { 
   Key, CircleCheck, Connection, Loading, Cpu, DataAnalysis, 
   Search, Upload, Check, RefreshRight, Delete, Warning,
-  FolderOpened, Document, Close
+  FolderOpened, Document, Close, InfoFilled
 } from '@element-plus/icons-vue'
 import api from '@/composables/useApi'
 
+const router = useRouter()
 const config = ref<any>(null)
-const apiKeyMasked = ref('')
+// 旧变量兼容（加载时填充 masked 显示）
+const apiKeyMasked = ref('')  // 保留向后兼容
+const llmKeyMasked = ref('')
+const embKeyMasked = ref('')
+const newLlmKey = ref('')
+const newEmbKey = ref('')
+const llmBaseUrl = ref('https://coding.dashscope.aliyuncs.com/v1')
+const embBaseUrl = ref('https://dashscope.aliyuncs.com/compatible-mode/v1')
+const llmModel = ref('qwen-plus')
+const embModel = ref('text-embedding-v3')
+// 旧字段兼容（不再使用，但保留防止编译报错）
 const newApiKey = ref('')
+const testingLlm = ref(false)
+const testingEmb = ref(false)
+const llmTestResult = ref<{ ok: boolean; message: string } | null>(null)
+const embTestResult = ref<{ ok: boolean; message: string } | null>(null)
+// 旧字段兼容
 const testing = ref(false)
-const saving = ref(false)
 const testResult = ref<{ ok: boolean; message: string } | null>(null)
+const saving = ref(false)
 const useLlmRefine = ref(false)
 const clearing = ref(false)
 
@@ -351,10 +452,17 @@ function onEmbPresetChange(label: string) {
 async function loadConfig() {
   const { data } = await api.get('/config')
   config.value = data.data.config
-  apiKeyMasked.value = data.data.api_key_masked
+  apiKeyMasked.value = data.data.api_key_masked || ''
+  llmKeyMasked.value = data.data.llm_key_masked || data.data.api_key_masked || ''
+  embKeyMasked.value = data.data.emb_key_masked || ''
   llmPreset.value = detectPreset(config.value?.llm?.base_url, llmPresets)
   embPreset.value = detectPreset(config.value?.embedding?.base_url, embPresets)
   useLlmRefine.value = config.value?.ingestion?.chunk_refiner?.use_llm || false
+  // 同步 base_url 其中和 model 到 Key 区域的输入框
+  if (config.value?.llm?.base_url) llmBaseUrl.value = config.value.llm.base_url
+  if (config.value?.embedding?.base_url) embBaseUrl.value = config.value.embedding.base_url
+  if (config.value?.llm?.model) llmModel.value = config.value.llm.model
+  if (config.value?.embedding?.model) embModel.value = config.value.embedding.model
 }
 
 async function saveConfig() {
@@ -363,9 +471,23 @@ async function saveConfig() {
     if (config.value.ingestion) {
       config.value.ingestion.chunk_refiner = { use_llm: useLlmRefine.value }
     }
-    await api.put('/config', { config: config.value, api_key: newApiKey.value || undefined })
+    // 将 Key 区域的 URL 和模型写入对应配置 section
+    if (config.value?.llm) {
+      if (llmBaseUrl.value) config.value.llm.base_url = llmBaseUrl.value
+      if (llmModel.value) config.value.llm.model = llmModel.value
+    }
+    if (config.value?.embedding) {
+      if (embBaseUrl.value) config.value.embedding.base_url = embBaseUrl.value
+      if (embModel.value) config.value.embedding.model = embModel.value
+    }
+    await api.put('/config', {
+      config: config.value,
+      api_key: newLlmKey.value || undefined,
+      embedding_api_key: newEmbKey.value || undefined,
+    })
     ElMessage.success('配置已保存')
-    newApiKey.value = ''
+    newLlmKey.value = ''
+    newEmbKey.value = ''
     await loadConfig()
   } catch {
     ElMessage.error('保存失败')
@@ -374,21 +496,47 @@ async function saveConfig() {
   }
 }
 
-async function testConnection() {
-  testing.value = true
-  testResult.value = null
+async function testLlmKey() {
+  testingLlm.value = true
+  llmTestResult.value = null
   try {
     const { data } = await api.post('/config/test', {
-      api_key: newApiKey.value || '',
-      base_url: config.value?.llm?.base_url || '',
-      model: config.value?.llm?.model || '',
+      api_key: newLlmKey.value || '',
+      base_url: llmBaseUrl.value || config.value?.llm?.base_url || '',
+      model: llmModel.value || config.value?.llm?.model || 'qwen-plus',
     })
-    testResult.value = data
+    llmTestResult.value = data
   } catch {
-    testResult.value = { ok: false, message: '请求失败' }
+    llmTestResult.value = { ok: false, message: '请求失败' }
   } finally {
-    testing.value = false
+    testingLlm.value = false
   }
+}
+
+async function testEmbKey() {
+  testingEmb.value = true
+  embTestResult.value = null
+  try {
+    const { data } = await api.post('/config/test', {
+      api_key: newEmbKey.value || '',
+      base_url: config.value?.embedding?.base_url || '',
+      model: config.value?.embedding?.model || '',
+      test_embedding: true,
+    })
+    embTestResult.value = data
+  } catch {
+    embTestResult.value = { ok: false, message: '请求失败' }
+  } finally {
+    testingEmb.value = false
+  }
+}
+
+// 兼容旧 testConnection
+async function testConnection() { await testLlmKey() }
+
+function restartOnboarding() {
+  localStorage.removeItem('jz_onboarding_done')
+  ElMessage.success('新手引导已重置，刷新页面后自动启动')
 }
 
 async function resetConfig() {
@@ -1088,5 +1236,87 @@ onMounted(() => {
 .doc-delete:hover {
   background: rgba(239, 68, 68, 0.1);
   color: #ef4444;
+}
+
+/* Key hint small label */
+.key-hint {
+  font-size: 10px;
+  color: var(--c-text-tertiary);
+  font-weight: 400;
+  opacity: 0.8;
+}
+
+/* Field hint (URL info) */
+.field-hint {
+  font-size: 10px;
+  color: var(--c-text-tertiary);
+  margin-top: -8px;
+  margin-bottom: var(--sp-3);
+  padding-left: 2px;
+  font-family: var(--font-mono, monospace);
+  opacity: 0.7;
+}
+
+/* About section */
+.about-section {}
+
+.about-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--sp-2) 0;
+  border-bottom: 1px solid var(--c-border);
+  font-size: var(--fs-sm);
+}
+
+.about-row:last-of-type {
+  border-bottom: none;
+}
+
+.about-label {
+  color: var(--c-text-tertiary);
+  font-size: var(--fs-xs);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.about-value {
+  color: var(--c-text-secondary);
+}
+
+.about-actions {
+  display: flex;
+  gap: var(--sp-4);
+  align-items: center;
+  padding-top: var(--sp-3);
+  flex-wrap: wrap;
+}
+
+.about-link {
+  font-size: var(--fs-sm);
+  color: var(--c-accent);
+  text-decoration: none;
+  opacity: 0.8;
+  transition: opacity var(--duration);
+}
+
+.about-link:hover {
+  opacity: 1;
+}
+
+.about-link-btn {
+  background: transparent;
+  border: 1px solid var(--c-border);
+  border-radius: var(--radius-xs);
+  color: var(--c-text-tertiary);
+  font-size: var(--fs-xs);
+  padding: 3px var(--sp-3);
+  cursor: pointer;
+  transition: all var(--duration) var(--ease);
+}
+
+.about-link-btn:hover {
+  color: var(--c-text-primary);
+  border-color: var(--c-border-hover);
 }
 </style>

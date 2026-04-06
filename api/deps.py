@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import logging
+import threading
 from functools import lru_cache
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Optional
+
+if TYPE_CHECKING:
+    from src.core.query_engine.hybrid_search import HybridSearch
+    from src.core.settings import Settings
+    from src.ingestion.pipeline import IngestionPipeline
+    from src.libs.llm.base_llm import BaseLLM
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +20,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 @lru_cache(maxsize=1)
-def get_settings() -> Any:
+def get_settings() -> Settings:
     """Return cached Settings instance."""
     from src.core.settings import load_settings
     return load_settings()
@@ -23,123 +30,154 @@ def get_settings() -> Any:
 # HybridSearch (lazy singleton)
 # ---------------------------------------------------------------------------
 
-_hybrid_search: Optional[Any] = None
+_hybrid_search: Optional[HybridSearch] = None
 _hybrid_collection: str = ""
+_init_lock = threading.Lock()
 
 
-def get_hybrid_search(collection: str = "default") -> Any:
-    """Return a cached HybridSearch instance, rebuilding if collection changes."""
+def get_hybrid_search(collection: str = "default") -> HybridSearch:
+    """Return a cached HybridSearch instance, rebuilding if collection changes.
+
+    Args:
+        collection: Name of the vector store collection.
+
+    Returns:
+        Initialized HybridSearch engine.
+    """
     global _hybrid_search, _hybrid_collection
 
     if _hybrid_search is not None and _hybrid_collection == collection:
         return _hybrid_search
 
-    settings = get_settings()
+    with _init_lock:
+        # Double-checked locking
+        if _hybrid_search is not None and _hybrid_collection == collection:
+            return _hybrid_search
 
-    from src.core.settings import resolve_path
-    from src.libs.embedding.embedding_factory import EmbeddingFactory
-    from src.libs.vector_store.vector_store_factory import VectorStoreFactory
-    from src.ingestion.storage.bm25_indexer import BM25Indexer
-    from src.core.query_engine.dense_retriever import DenseRetriever
-    from src.core.query_engine.sparse_retriever import SparseRetriever
-    from src.core.query_engine.query_processor import QueryProcessor
-    from src.core.query_engine.fusion import RRFFusion
-    from src.core.query_engine.hybrid_search import HybridSearch
-    from src.core.query_engine.strategy_router import StrategyRouter
-    from src.core.query_engine.reranker import CoreReranker
+        settings = get_settings()
 
-    embedding = EmbeddingFactory.create(settings)
-    vector_store = VectorStoreFactory.create(settings, collection_name=collection)
+        from src.core.settings import resolve_path
+        from src.libs.embedding.embedding_factory import EmbeddingFactory
+        from src.libs.vector_store.vector_store_factory import VectorStoreFactory
+        from src.ingestion.storage.bm25_indexer import BM25Indexer
+        from src.core.query_engine.dense_retriever import DenseRetriever
+        from src.core.query_engine.sparse_retriever import SparseRetriever
+        from src.core.query_engine.query_processor import QueryProcessor
+        from src.core.query_engine.fusion import RRFFusion
+        from src.core.query_engine.hybrid_search import HybridSearch
+        from src.core.query_engine.strategy_router import StrategyRouter
+        from src.core.query_engine.reranker import CoreReranker
 
-    bm25 = BM25Indexer(index_dir=str(resolve_path(f"data/db/bm25/{collection}")))
-    bm25.load(collection)
+        embedding = EmbeddingFactory.create(settings)
+        vector_store = VectorStoreFactory.create(settings, collection_name=collection)
 
-    dense_retriever = DenseRetriever(settings=settings, embedding_client=embedding, vector_store=vector_store)
-    sparse_retriever = SparseRetriever(settings=settings, bm25_indexer=bm25, vector_store=vector_store)
-    query_processor = QueryProcessor()
-    fusion = RRFFusion()
+        bm25 = BM25Indexer(index_dir=str(resolve_path(f"data/db/bm25/{collection}")))
+        bm25.load(collection)
 
-    # Create reranker (gracefully falls back to NoneReranker if disabled/failed)
-    reranker: CoreReranker | None = None
-    try:
-        reranker = CoreReranker(settings)
-        if not reranker.is_enabled:
-            reranker = None
-    except Exception as e:
-        logger.warning(f"Reranker init failed, proceeding without: {e}")
+        dense_retriever = DenseRetriever(settings=settings, embedding_client=embedding, vector_store=vector_store)
+        sparse_retriever = SparseRetriever(settings=settings, bm25_indexer=bm25, vector_store=vector_store)
+        query_processor = QueryProcessor()
+        fusion = RRFFusion()
 
-    _hybrid_search = HybridSearch(
-        settings=settings,
-        query_processor=query_processor,
-        dense_retriever=dense_retriever,
-        sparse_retriever=sparse_retriever,
-        fusion=fusion,
-        reranker=reranker,
-    )
-
-    parent_mode = getattr(settings.retrieval, "parent_retrieval_mode", "never")
-    graph_mode = getattr(settings.retrieval, "graph_rag_mode", "never")
-
-    if parent_mode != "never":
+        # Create reranker (gracefully falls back to NoneReranker if disabled/failed)
+        reranker: CoreReranker | None = None
         try:
-            from src.ingestion.storage.parent_store import ParentStore
-
-            _hybrid_search.parent_store = ParentStore(
-                db_path=str(resolve_path(f"data/db/parent_store/{collection}.db"))
-            )
+            reranker = CoreReranker(settings)
+            if not reranker.is_enabled:
+                reranker = None
         except Exception as e:
-            logger.warning(f"ParentStore init failed: {e}")
+            logger.warning(f"Reranker init failed, proceeding without: {e}")
 
-    if graph_mode != "never":
-        try:
-            from src.ingestion.storage.graph_store import GraphStore
+        _hybrid_search = HybridSearch(
+            settings=settings,
+            query_processor=query_processor,
+            dense_retriever=dense_retriever,
+            sparse_retriever=sparse_retriever,
+            fusion=fusion,
+            reranker=reranker,
+        )
 
-            _hybrid_search.graph_store = GraphStore(
-                db_path=str(resolve_path(f"data/db/graph_store/{collection}.db"))
-            )
-        except Exception as e:
-            logger.warning(f"GraphStore init failed: {e}")
+        parent_mode = getattr(settings.retrieval, "parent_retrieval_mode", "never")
+        graph_mode = getattr(settings.retrieval, "graph_rag_mode", "never")
 
-    router_llm = None
-    if parent_mode == "auto" or graph_mode == "auto":
-        try:
-            router_llm = get_llm()
-        except Exception as e:
-            logger.warning(f"StrategyRouter LLM init failed, using fallback routing: {e}")
+        if parent_mode != "never":
+            try:
+                from src.ingestion.storage.parent_store import ParentStore
 
-    _hybrid_search.strategy_router = StrategyRouter(settings=settings, llm=router_llm)
-    _hybrid_collection = collection
-    logger.info(f"HybridSearch initialized for collection '{collection}'")
-    return _hybrid_search
+                _hybrid_search.parent_store = ParentStore(
+                    db_path=str(resolve_path(f"data/db/parent_store/{collection}.db"))
+                )
+            except Exception as e:
+                logger.warning(f"ParentStore init failed: {e}")
+
+        if graph_mode != "never":
+            try:
+                from src.ingestion.storage.graph_store import GraphStore
+
+                _hybrid_search.graph_store = GraphStore(
+                    db_path=str(resolve_path(f"data/db/graph_store/{collection}.db"))
+                )
+            except Exception as e:
+                logger.warning(f"GraphStore init failed: {e}")
+
+        router_llm = None
+        if parent_mode == "auto" or graph_mode == "auto":
+            try:
+                router_llm = get_llm()
+            except Exception as e:
+                logger.warning(f"StrategyRouter LLM init failed, using fallback routing: {e}")
+
+        _hybrid_search.strategy_router = StrategyRouter(settings=settings, llm=router_llm)
+        _hybrid_collection = collection
+        logger.info(f"HybridSearch initialized for collection '{collection}'")
+        return _hybrid_search
 
 
 # ---------------------------------------------------------------------------
 # LLM (lazy singleton)
 # ---------------------------------------------------------------------------
 
-_llm: Optional[Any] = None
+_llm: Optional[BaseLLM] = None
 
 
-def get_llm() -> Any:
-    """Return a cached LLM instance."""
+def get_llm() -> BaseLLM:
+    """Return a cached LLM instance.
+
+    Returns:
+        Initialized BaseLLM implementation.
+    """
     global _llm
     if _llm is not None:
         return _llm
 
-    from src.libs.llm.llm_factory import LLMFactory
-    _llm = LLMFactory.create(get_settings())
-    return _llm
+    with _init_lock:
+        if _llm is not None:
+            return _llm
+        from src.libs.llm.llm_factory import LLMFactory
+        _llm = LLMFactory.create(get_settings())
+        return _llm
 
 
 # ---------------------------------------------------------------------------
 # IngestionPipeline (cached per collection + skip_llm key)
 # ---------------------------------------------------------------------------
 
-_pipelines: dict[tuple[str, bool], Any] = {}
+_pipelines: dict[tuple[str, bool], IngestionPipeline] = {}
 
 
-def get_pipeline(collection: str = "default", skip_llm_transform: bool = False) -> Any:
-    """Return a cached IngestionPipeline, creating one if needed."""
+def get_pipeline(
+    collection: str = "default",
+    skip_llm_transform: bool = False,
+) -> IngestionPipeline:
+    """Return a cached IngestionPipeline, creating one if needed.
+
+    Args:
+        collection: Target collection name.
+        skip_llm_transform: Whether to skip LLM-based chunk transformation.
+
+    Returns:
+        Initialized IngestionPipeline instance.
+    """
     key = (collection, skip_llm_transform)
     if key in _pipelines:
         return _pipelines[key]
@@ -179,7 +217,7 @@ def reset_all() -> None:
 
 def shutdown_stores() -> None:
     """Gracefully close all vector stores to prevent HNSW index corruption.
-    
+
     Called on FastAPI shutdown event. Ensures ChromaDB WAL is checkpointed
     and HNSW index is flushed before process exits.
     """

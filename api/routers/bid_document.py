@@ -44,18 +44,10 @@ from src.bid.document_db import (
     update_template,
     upsert_company_doc,
 )
-from src.bid.clause_extractor import extract_clauses, extract_clauses_stream
 from src.bid.company_doc_parser import parse_and_import as parse_company_pdf
-from src.bid.content_filler import fill_outline_stream
-from src.bid.docx_exporter import export_to_docx
-from src.bid.outline_generator import (
-    enrich_outline_with_matches,
-    generate_default_outline,
-    generate_outline,
-)
-from src.bid.watermark import add_watermark, generate_watermark_text
 from src.core.settings import resolve_path, load_settings
 from src.libs.llm import LLMFactory
+from src.services.bid_document_service import BidDocumentService
 
 logger = logging.getLogger(__name__)
 
@@ -399,7 +391,7 @@ async def upload_tender_file(file: UploadFile = File(...)) -> Dict[str, Any]:
 
 @router.post("/extract")
 async def extract_clauses_api(req: ExtractClausesReq):
-    """Extract clauses from tender file (SSE stream)."""
+    """Extract clauses from tender file."""
     session = get_session(req.session_id)
     if not session:
         return {"ok": False, "message": "会话不存在"}
@@ -408,44 +400,15 @@ async def extract_clauses_api(req: ExtractClausesReq):
     if not file_path.exists():
         return {"ok": False, "message": "招标文件不存在"}
 
-    content = ""
-    suffix = file_path.suffix.lower()
-
     try:
-        if suffix == ".pdf":
-            try:
-                import fitz
-                doc = fitz.open(str(file_path))
-                for page in doc:
-                    content += page.get_text()
-                doc.close()
-            except ImportError:
-                return {"ok": False, "message": "需要安装 PyMuPDF: pip install pymupdf"}
-        elif suffix in (".docx", ".doc"):
-            try:
-                from docx import Document
-                doc = Document(str(file_path))
-                content = "\n".join([p.text for p in doc.paragraphs])
-            except ImportError:
-                return {"ok": False, "message": "需要安装 python-docx: pip install python-docx"}
-        elif suffix == ".txt":
-            content = file_path.read_text(encoding="utf-8")
-        else:
-            return {"ok": False, "message": f"不支持的文件格式: {suffix}"}
-    except Exception as e:
-        logger.exception("Failed to read tender file")
-        return {"ok": False, "message": f"读取文件失败: {e}"}
-
-    if not content.strip():
-        return {"ok": False, "message": "文件内容为空"}
-
-    try:
-        settings = load_settings()
-        llm = LLMFactory.create(settings)
-        clauses = await extract_clauses(content, llm)
+        svc = BidDocumentService()
+        content = svc.parse_tender_file(file_path)
+        clauses = await svc.extract_clauses_from_content(content)
         session.clauses = clauses
         update_session(session)
         return {"ok": True, "clauses": clauses, "message": f"成功提取 {len(clauses)} 条条款"}
+    except (ImportError, ValueError) as e:
+        return {"ok": False, "message": str(e)}
     except Exception as e:
         logger.exception("Clause extraction failed")
         return {"ok": False, "message": f"条款提取失败: {e}"}
@@ -462,15 +425,8 @@ async def generate_outline_api(req: GenerateOutlineReq) -> Dict[str, Any]:
         if not session.clauses:
             return {"ok": False, "message": "请先提取条款"}
 
-        try:
-            settings = load_settings()
-            llm = LLMFactory.create(settings)
-            outline = await generate_outline(session.clauses, llm)
-        except Exception as e:
-            logger.warning(f"LLM outline generation failed, using default: {e}")
-            outline = generate_default_outline(session.clauses)
-
-        outline = enrich_outline_with_matches(outline)
+        svc = BidDocumentService()
+        outline = await svc.generate_outline_from_clauses(session.clauses)
 
         session.outline = outline
         update_session(session)
@@ -514,66 +470,15 @@ async def fill_content_api(req: FillContentReq):
         session.project_code = req.project_code
     update_session(session)
 
-    async def generate():
-        try:
-            settings = load_settings()
-            llm = LLMFactory.create(settings)
-            content_map = {}
-
-            async for chunk in fill_outline_stream(
-                session.outline,
-                session.clauses,
-                llm,
-                session.project_name,
-                session.project_code,
-            ):
-                yield chunk
-
-                try:
-                    data = json.loads(chunk.replace("data: ", "").strip())
-                    if data.get("type") == "section":
-                        content_map[data["section_id"]] = data["content"]
-                except Exception:
-                    pass
-
-            session.content = content_map
-            update_session(session)
-        except Exception as e:
-            logger.exception("Content fill failed")
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)}, ensure_ascii=False)}\n\n"
-
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    svc = BidDocumentService()
+    return StreamingResponse(svc.fill_content_stream(session), media_type="text/event-stream")
 
 
 @router.post("/watermark")
 async def add_watermark_api(req: WatermarkReq) -> Dict[str, Any]:
     """Add watermark to specified materials."""
     try:
-        watermark_text = generate_watermark_text(req.project_code)
-        results = []
-
-        for material_id in req.material_ids:
-            material = get_material(material_id)
-            if not material or not material.file_path:
-                results.append({"id": material_id, "ok": False, "message": "材料或文件不存在"})
-                continue
-
-            file_path = Path(material.file_path)
-            if not file_path.exists():
-                results.append({"id": material_id, "ok": False, "message": "文件不存在"})
-                continue
-
-            try:
-                output_path = add_watermark(str(file_path), watermark_text)
-                results.append({
-                    "id": material_id,
-                    "ok": True,
-                    "output_path": output_path,
-                    "message": "水印添加成功",
-                })
-            except Exception as e:
-                results.append({"id": material_id, "ok": False, "message": str(e)})
-
+        results = BidDocumentService.add_watermarks(req.material_ids, req.project_code)
         return {"ok": True, "results": results}
     except Exception as e:
         logger.exception("Add watermark failed")
@@ -589,45 +494,22 @@ async def export_document_api(req: ExportReq):
         if not session:
             raise HTTPException(status_code=404, detail="会话不存在")
 
-        if not session.outline:
-            raise HTTPException(status_code=400, detail="请先生成大纲")
-
         timestamp = int(time.time())
         filename = f"商务文件_{session.project_name or session.id}_{timestamp}.docx"
         output_path = _EXPORT_DIR / filename
 
-        attachments = {}
-        for item in session.outline:
-            section_id = item.get("id", "")
-            category = item.get("material_category")
-            if category:
-                result = list_materials(category=category, page_size=1)
-                materials = result.get("records", [])
-                if materials and materials[0].get("file_path"):
-                    file_path = materials[0]["file_path"]
-                    suffix = Path(file_path).suffix.lower()
-                    if suffix in (".jpg", ".jpeg", ".png", ".bmp", ".gif"):
-                        attachments[section_id] = file_path
-
-        export_to_docx(
-            outline=session.outline,
-            content=session.content,
-            attachments=attachments,
-            output_path=str(output_path),
-            project_name=session.project_name,
-            project_code=session.project_code,
-        )
-
-        session.status = "completed"
-        update_session(session)
+        svc = BidDocumentService()
+        svc.export_session_to_docx(session, output_path)
 
         return FileResponse(
             path=str(output_path),
             filename=filename,
             media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
-    except HTTPException:
-        raise
+    except (ValueError, HTTPException) as e:
+        if isinstance(e, HTTPException):
+            raise
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.exception("Export document failed")
         raise HTTPException(status_code=500, detail=str(e))
