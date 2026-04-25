@@ -1,5 +1,0 @@
-2026-03-25 02:37:07,007 INFO __main__ Loading settings and initializing Metadata Enricher...
-2026-03-25 02:37:07,017 INFO __main__ Forcing API KEY injection (found in env: True)
-2026-03-25 02:37:07,018 INFO __main__ DEBUG api_key in settings AFTER FORCE: **********4ec9
-2026-03-25 02:37:07,018 WARNING src.ingestion.transform.metadata_enricher Failed to initialize LLM: Failed to instantiate LLM provider 'openai': OpenAI API key not provided. Set OPENAI_API_KEY environment variable or pass api_key parameter.. Falling back to rule-based only.
-2026-03-25 02:37:07,018 ERROR __main__ Failed to initialize LLM. Please check settings.
